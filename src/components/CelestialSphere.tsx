@@ -326,11 +326,19 @@ export default function CelestialSphere() {
 
     // Sky rotation simulation
     let simTime = 0;
+    let simDateMs = Date.now();
     const speedMap: Record<Speed, number> = {
       pause: 0,
       real: 1,
       fast: 10,
       rewind: -5,
+    };
+    // Simulated seconds per wall second for ephemeris time
+    const simSecondsPerWall: Record<Speed, number> = {
+      pause: 0,
+      real: 60, // 1 sim minute per wall second
+      fast: 600,
+      rewind: -300,
     };
 
     const onResize = () => {
@@ -338,6 +346,7 @@ export default function CelestialSphere() {
       camera.aspect = container.clientWidth / container.clientHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(container.clientWidth, container.clientHeight);
+      labelRenderer.setSize(container.clientWidth, container.clientHeight);
     };
     window.addEventListener("resize", onResize);
 
@@ -345,11 +354,23 @@ export default function CelestialSphere() {
     const clock = new THREE.Clock();
     const animate = () => {
       const dt = clock.getDelta();
-      simTime += dt * speedMap[speedRef.current] * 0.02;
+      const spd = speedRef.current;
+      simTime += dt * speedMap[spd] * 0.02;
+      simDateMs += dt * 1000 * simSecondsPerWall[spd];
+      simDateRef.current = new Date(simDateMs);
+
       stars.rotation.y = simTime;
       catalogStars.rotation.y = simTime;
       constellationLines.rotation.y = simTime;
+      planetGroup.rotation.y = simTime;
       constellationLines.visible = constellationsRef.current;
+
+      // Axial planet rotation
+      const sign = spd === "rewind" ? -1 : spd === "pause" ? 0 : 1;
+      const axisDt = dt * Math.abs(simSecondsPerWall[spd]) * sign;
+      localMeshes.forEach((mesh) => {
+        mesh.rotation.y += (mesh.userData.rotPerSec as number) * axisDt;
+      });
 
       // Camera orientation from yaw/pitch
       const dir = new THREE.Vector3(
@@ -360,6 +381,7 @@ export default function CelestialSphere() {
       camera.lookAt(dir);
 
       renderer.render(scene, camera);
+      labelRenderer.render(scene, camera);
       raf = requestAnimationFrame(animate);
     };
     animate();
@@ -380,9 +402,52 @@ export default function CelestialSphere() {
       catMat.dispose();
       lineGeo.dispose();
       lineMat.dispose();
+      localMeshes.forEach((m) => {
+        m.geometry.dispose();
+        (m.material as THREE.Material).dispose();
+      });
+      planetMeshesRef.current = new Map();
       if (el.parentNode) el.parentNode.removeChild(el);
+      if (labelEl.parentNode) labelEl.parentNode.removeChild(labelEl);
     };
   }, []);
+
+  // Ephemeris poller — fetch planet positions from JPL Horizons periodically
+  useEffect(() => {
+    const PLANET_R = 460;
+    const bodies = PLANETS.map((p) => ({ id: p.id, name: p.name }));
+    const byName = new Map(PLANETS.map((p) => [p.name, p]));
+
+    let cancelled = false;
+
+    const update = async () => {
+      try {
+        const time = simDateRef.current.toISOString();
+        const res = await fetchPositions({ data: { time, bodies } });
+        if (cancelled) return;
+        for (const pos of res.positions) {
+          const meta = byName.get(pos.name);
+          const mesh = planetMeshesRef.current.get(meta?.id ?? "");
+          if (!mesh || !meta) continue;
+          // Horizons RA returned in degrees (ANG_FORMAT=DEG); convert to hours
+          const raHours = pos.ra / 15;
+          const [x, y, z] = raDecToVec3(raHours, pos.dec, PLANET_R);
+          mesh.position.set(x, y, z);
+          // Tilt mesh so its "north pole" points toward celestial north
+          mesh.up.set(0, 1, 0);
+        }
+      } catch (err) {
+        console.warn("Horizons fetch failed", err);
+      }
+    };
+
+    update();
+    const id = window.setInterval(update, 8000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [fetchPositions]);
 
   const submitLocation = () => {
     const lat = parseFloat(formLat);
