@@ -71,6 +71,8 @@ export default function CelestialSphere() {
     trailPositions: Float32Array;
     trailCount: number;
     trailHead: number;
+    lastAz?: number;
+    lastAlt?: number;
   };
   const satellitesRef = useRef<SatRuntime[]>([]);
   const satGroupRef = useRef<THREE.Group | null>(null);
