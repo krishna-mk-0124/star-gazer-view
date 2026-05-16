@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
+import {
+  CSS2DRenderer,
+  CSS2DObject,
+} from "three/examples/jsm/renderers/CSS2DRenderer.js";
+import { useServerFn } from "@tanstack/react-start";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -12,6 +17,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { MapPin, Pause, Play, FastForward, Rewind, Sparkles } from "lucide-react";
 import { STARS, CONSTELLATIONS, raDecToVec3 } from "@/lib/starCatalog";
+import { PLANETS } from "@/lib/planets";
+import { getPlanetPositions } from "@/lib/horizons.functions";
 
 type Location = { city: string; lat: number; lon: number };
 
@@ -40,6 +47,11 @@ export default function CelestialSphere() {
   const [formCity, setFormCity] = useState("");
   const [formLat, setFormLat] = useState("");
   const [formLon, setFormLon] = useState("");
+
+  // Planet system refs (used by animation loop + ephemeris poller)
+  const simDateRef = useRef<Date>(new Date());
+  const planetMeshesRef = useRef<Map<string, THREE.Mesh>>(new Map());
+  const fetchPositions = useServerFn(getPlanetPositions);
 
   // Geolocation on mount
   useEffect(() => {
