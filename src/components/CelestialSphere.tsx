@@ -10,7 +10,8 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { MapPin, Pause, Play, FastForward, Rewind } from "lucide-react";
+import { MapPin, Pause, Play, FastForward, Rewind, Sparkles } from "lucide-react";
+import { STARS, CONSTELLATIONS, raDecToVec3 } from "@/lib/starCatalog";
 
 type Location = { city: string; lat: number; lon: number };
 
@@ -26,6 +27,15 @@ export default function CelestialSphere() {
   const containerRef = useRef<HTMLDivElement>(null);
   const [location, setLocation] = useState<Location>(DEFAULT_LOCATION);
   const [speed, setSpeed] = useState<Speed>("real");
+  const [constellationsVisible, setConstellationsVisible] = useState(true);
+  const speedRef = useRef<Speed>("real");
+  const constellationsRef = useRef(true);
+  useEffect(() => {
+    speedRef.current = speed;
+  }, [speed]);
+  useEffect(() => {
+    constellationsRef.current = constellationsVisible;
+  }, [constellationsVisible]);
   const [modalOpen, setModalOpen] = useState(false);
   const [formCity, setFormCity] = useState("");
   const [formLat, setFormLat] = useState("");
