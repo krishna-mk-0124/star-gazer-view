@@ -207,6 +207,56 @@ export default function CelestialSphere() {
     const constellationLines = new THREE.LineSegments(lineGeo, lineMat);
     scene.add(constellationLines);
 
+    // Planets — meshes with textures, axial spin, and billboarded HTML labels
+    const PLANET_R = 460;
+    const texLoader = new THREE.TextureLoader();
+    texLoader.setCrossOrigin("anonymous");
+    const planetGroup = new THREE.Group();
+    scene.add(planetGroup);
+    const localMeshes = new Map<string, THREE.Mesh>();
+    for (const p of PLANETS) {
+      const geo = new THREE.SphereGeometry(p.radius, 48, 48);
+      const mat = new THREE.MeshStandardMaterial({
+        color: p.color,
+        roughness: 0.9,
+        metalness: 0.0,
+      });
+      texLoader.load(
+        p.texture,
+        (tex) => {
+          tex.colorSpace = THREE.SRGBColorSpace;
+          mat.map = tex;
+          mat.color.set(0xffffff);
+          mat.needsUpdate = true;
+        },
+        undefined,
+        () => {
+          /* keep fallback color */
+        }
+      );
+      const mesh = new THREE.Mesh(geo, mat);
+      // Initial off-screen position until first ephemeris arrives
+      mesh.position.set(PLANET_R, 0, 0);
+      mesh.userData = {
+        rotPerSec:
+          (Math.PI * 2) / (p.rotationPeriodHours * 3600 || 1),
+        name: p.name,
+      };
+
+      // Billboarded HTML label
+      const labelDiv = document.createElement("div");
+      labelDiv.textContent = p.name;
+      labelDiv.className =
+        "px-2 py-0.5 rounded-md text-[11px] font-medium tracking-wide text-sky-100 bg-black/55 border border-sky-400/30 backdrop-blur-sm shadow-[0_0_10px_rgba(79,195,255,0.25)] whitespace-nowrap";
+      const labelObj = new CSS2DObject(labelDiv);
+      labelObj.position.set(0, p.radius + 6, 0);
+      mesh.add(labelObj);
+
+      planetGroup.add(mesh);
+      localMeshes.set(p.id, mesh);
+    }
+    planetMeshesRef.current = localMeshes;
+
     // Milky-way-ish faint band
     const bandGeo = new THREE.SphereGeometry(480, 32, 32);
     const bandMat = new THREE.MeshBasicMaterial({
