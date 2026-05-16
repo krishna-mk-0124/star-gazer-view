@@ -15,12 +15,15 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { MapPin, Pause, Play, FastForward, Rewind, Sparkles } from "lucide-react";
+import { MapPin, Pause, Play, FastForward, Rewind, Sparkles, GraduationCap } from "lucide-react";
 import { STARS, CONSTELLATIONS, raDecToVec3 } from "@/lib/starCatalog";
 import { PLANETS } from "@/lib/planets";
 import { getPlanetPositions } from "@/lib/horizons.functions";
 import { getSatelliteTLEs } from "@/lib/satellites.functions";
 import * as satellite from "satellite.js";
+import { CelestialInfoPanel, type CelestialSelection } from "@/components/CelestialInfoPanel";
+import { QuizModal } from "@/components/QuizModal";
+import { raDecToAzAlt } from "@/lib/astro";
 
 type Location = { city: string; lat: number; lon: number };
 
@@ -71,6 +74,18 @@ export default function CelestialSphere() {
   };
   const satellitesRef = useRef<SatRuntime[]>([]);
   const satGroupRef = useRef<THREE.Group | null>(null);
+
+  // Selection / interaction state
+  const [selection, setSelection] = useState<CelestialSelection | null>(null);
+  const [quizOpen, setQuizOpen] = useState(false);
+  type SelectionTarget =
+    | { kind: "star"; key: string; getWorldPos: (out: THREE.Vector3) => THREE.Vector3 }
+    | { kind: "planet"; id: string; getWorldPos: (out: THREE.Vector3) => THREE.Vector3 }
+    | { kind: "satellite"; idx: number; getWorldPos: (out: THREE.Vector3) => THREE.Vector3 };
+  const selectionTargetRef = useRef<SelectionTarget | null>(null);
+  const targetRingRef = useRef<THREE.Mesh | null>(null);
+  // Bridge to fire raycasts from React click handlers into scene-scope code
+  const tryPickRef = useRef<(ndcX: number, ndcY: number) => void>(() => {});
 
   // Geolocation on mount
   useEffect(() => {
