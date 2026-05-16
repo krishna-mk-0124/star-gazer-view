@@ -566,6 +566,8 @@ export default function CelestialSphere() {
           const z = SAT_R * Math.cos(el) * Math.cos(az);
           sat.mesh.position.set(x, y, z);
           sat.mesh.scale.setScalar(pulse);
+          sat.lastAz = az;
+          sat.lastAlt = el;
 
           // Append to trail (ring buffer)
           const idx = sat.trailHead * 3;
