@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
+import {
+  CSS2DRenderer,
+  CSS2DObject,
+} from "three/examples/jsm/renderers/CSS2DRenderer.js";
+import { useServerFn } from "@tanstack/react-start";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -12,6 +17,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { MapPin, Pause, Play, FastForward, Rewind, Sparkles } from "lucide-react";
 import { STARS, CONSTELLATIONS, raDecToVec3 } from "@/lib/starCatalog";
+import { PLANETS } from "@/lib/planets";
+import { getPlanetPositions } from "@/lib/horizons.functions";
 
 type Location = { city: string; lat: number; lon: number };
 
@@ -40,6 +47,11 @@ export default function CelestialSphere() {
   const [formCity, setFormCity] = useState("");
   const [formLat, setFormLat] = useState("");
   const [formLon, setFormLon] = useState("");
+
+  // Planet system refs (used by animation loop + ephemeris poller)
+  const simDateRef = useRef<Date>(new Date());
+  const planetMeshesRef = useRef<Map<string, THREE.Mesh>>(new Map());
+  const fetchPositions = useServerFn(getPlanetPositions);
 
   // Geolocation on mount
   useEffect(() => {
@@ -79,6 +91,21 @@ export default function CelestialSphere() {
     renderer.setPixelRatio(window.devicePixelRatio);
     renderer.setSize(container.clientWidth, container.clientHeight);
     container.appendChild(renderer.domElement);
+
+    // CSS2D overlay for billboarded planet labels
+    const labelRenderer = new CSS2DRenderer();
+    labelRenderer.setSize(container.clientWidth, container.clientHeight);
+    const labelEl = labelRenderer.domElement;
+    labelEl.style.position = "absolute";
+    labelEl.style.inset = "0";
+    labelEl.style.pointerEvents = "none";
+    container.appendChild(labelEl);
+
+    // Soft lighting so planet textures are visible
+    scene.add(new THREE.AmbientLight(0xffffff, 0.85));
+    const sun = new THREE.DirectionalLight(0xffffff, 1.1);
+    sun.position.set(100, 80, 50);
+    scene.add(sun);
 
     // Stars: random points on a large sphere (inside view)
     const starCount = 6000;
@@ -180,6 +207,56 @@ export default function CelestialSphere() {
     const constellationLines = new THREE.LineSegments(lineGeo, lineMat);
     scene.add(constellationLines);
 
+    // Planets — meshes with textures, axial spin, and billboarded HTML labels
+    const PLANET_R = 460;
+    const texLoader = new THREE.TextureLoader();
+    texLoader.setCrossOrigin("anonymous");
+    const planetGroup = new THREE.Group();
+    scene.add(planetGroup);
+    const localMeshes = new Map<string, THREE.Mesh>();
+    for (const p of PLANETS) {
+      const geo = new THREE.SphereGeometry(p.radius, 48, 48);
+      const mat = new THREE.MeshStandardMaterial({
+        color: p.color,
+        roughness: 0.9,
+        metalness: 0.0,
+      });
+      texLoader.load(
+        p.texture,
+        (tex) => {
+          tex.colorSpace = THREE.SRGBColorSpace;
+          mat.map = tex;
+          mat.color.set(0xffffff);
+          mat.needsUpdate = true;
+        },
+        undefined,
+        () => {
+          /* keep fallback color */
+        }
+      );
+      const mesh = new THREE.Mesh(geo, mat);
+      // Initial off-screen position until first ephemeris arrives
+      mesh.position.set(PLANET_R, 0, 0);
+      mesh.userData = {
+        rotPerSec:
+          (Math.PI * 2) / (p.rotationPeriodHours * 3600 || 1),
+        name: p.name,
+      };
+
+      // Billboarded HTML label
+      const labelDiv = document.createElement("div");
+      labelDiv.textContent = p.name;
+      labelDiv.className =
+        "px-2 py-0.5 rounded-md text-[11px] font-medium tracking-wide text-sky-100 bg-black/55 border border-sky-400/30 backdrop-blur-sm shadow-[0_0_10px_rgba(79,195,255,0.25)] whitespace-nowrap";
+      const labelObj = new CSS2DObject(labelDiv);
+      labelObj.position.set(0, p.radius + 6, 0);
+      mesh.add(labelObj);
+
+      planetGroup.add(mesh);
+      localMeshes.set(p.id, mesh);
+    }
+    planetMeshesRef.current = localMeshes;
+
     // Milky-way-ish faint band
     const bandGeo = new THREE.SphereGeometry(480, 32, 32);
     const bandMat = new THREE.MeshBasicMaterial({
@@ -249,11 +326,19 @@ export default function CelestialSphere() {
 
     // Sky rotation simulation
     let simTime = 0;
+    let simDateMs = Date.now();
     const speedMap: Record<Speed, number> = {
       pause: 0,
       real: 1,
       fast: 10,
       rewind: -5,
+    };
+    // Simulated seconds per wall second for ephemeris time
+    const simSecondsPerWall: Record<Speed, number> = {
+      pause: 0,
+      real: 60, // 1 sim minute per wall second
+      fast: 600,
+      rewind: -300,
     };
 
     const onResize = () => {
@@ -261,6 +346,7 @@ export default function CelestialSphere() {
       camera.aspect = container.clientWidth / container.clientHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(container.clientWidth, container.clientHeight);
+      labelRenderer.setSize(container.clientWidth, container.clientHeight);
     };
     window.addEventListener("resize", onResize);
 
@@ -268,11 +354,23 @@ export default function CelestialSphere() {
     const clock = new THREE.Clock();
     const animate = () => {
       const dt = clock.getDelta();
-      simTime += dt * speedMap[speedRef.current] * 0.02;
+      const spd = speedRef.current;
+      simTime += dt * speedMap[spd] * 0.02;
+      simDateMs += dt * 1000 * simSecondsPerWall[spd];
+      simDateRef.current = new Date(simDateMs);
+
       stars.rotation.y = simTime;
       catalogStars.rotation.y = simTime;
       constellationLines.rotation.y = simTime;
+      planetGroup.rotation.y = simTime;
       constellationLines.visible = constellationsRef.current;
+
+      // Axial planet rotation
+      const sign = spd === "rewind" ? -1 : spd === "pause" ? 0 : 1;
+      const axisDt = dt * Math.abs(simSecondsPerWall[spd]) * sign;
+      localMeshes.forEach((mesh) => {
+        mesh.rotation.y += (mesh.userData.rotPerSec as number) * axisDt;
+      });
 
       // Camera orientation from yaw/pitch
       const dir = new THREE.Vector3(
@@ -283,6 +381,7 @@ export default function CelestialSphere() {
       camera.lookAt(dir);
 
       renderer.render(scene, camera);
+      labelRenderer.render(scene, camera);
       raf = requestAnimationFrame(animate);
     };
     animate();
@@ -303,9 +402,52 @@ export default function CelestialSphere() {
       catMat.dispose();
       lineGeo.dispose();
       lineMat.dispose();
+      localMeshes.forEach((m) => {
+        m.geometry.dispose();
+        (m.material as THREE.Material).dispose();
+      });
+      planetMeshesRef.current = new Map();
       if (el.parentNode) el.parentNode.removeChild(el);
+      if (labelEl.parentNode) labelEl.parentNode.removeChild(labelEl);
     };
   }, []);
+
+  // Ephemeris poller — fetch planet positions from JPL Horizons periodically
+  useEffect(() => {
+    const PLANET_R = 460;
+    const bodies = PLANETS.map((p) => ({ id: p.id, name: p.name }));
+    const byName = new Map(PLANETS.map((p) => [p.name, p]));
+
+    let cancelled = false;
+
+    const update = async () => {
+      try {
+        const time = simDateRef.current.toISOString();
+        const res = await fetchPositions({ data: { time, bodies } });
+        if (cancelled) return;
+        for (const pos of res.positions) {
+          const meta = byName.get(pos.name);
+          const mesh = planetMeshesRef.current.get(meta?.id ?? "");
+          if (!mesh || !meta) continue;
+          // Horizons RA returned in degrees (ANG_FORMAT=DEG); convert to hours
+          const raHours = pos.ra / 15;
+          const [x, y, z] = raDecToVec3(raHours, pos.dec, PLANET_R);
+          mesh.position.set(x, y, z);
+          // Tilt mesh so its "north pole" points toward celestial north
+          mesh.up.set(0, 1, 0);
+        }
+      } catch (err) {
+        console.warn("Horizons fetch failed", err);
+      }
+    };
+
+    update();
+    const id = window.setInterval(update, 8000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [fetchPositions]);
 
   const submitLocation = () => {
     const lat = parseFloat(formLat);
