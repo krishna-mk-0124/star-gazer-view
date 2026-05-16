@@ -119,6 +119,67 @@ export default function CelestialSphere() {
     const stars = new THREE.Points(starGeo, starMat);
     scene.add(stars);
 
+    // Named catalog stars — sized & tinted by magnitude (blue-white)
+    const STAR_R = 490;
+    const catalogKeys = Object.keys(STARS);
+    const catPositions = new Float32Array(catalogKeys.length * 3);
+    const catColors = new Float32Array(catalogKeys.length * 3);
+    const catSizes = new Float32Array(catalogKeys.length);
+    catalogKeys.forEach((key, i) => {
+      const s = STARS[key];
+      const [x, y, z] = raDecToVec3(s.ra, s.dec, STAR_R);
+      catPositions[i * 3] = x;
+      catPositions[i * 3 + 1] = y;
+      catPositions[i * 3 + 2] = z;
+      // Brightness from magnitude: lower mag = brighter
+      const brightness = Math.max(0.35, Math.min(1, (4 - s.mag) / 5));
+      // Blue-white tint
+      catColors[i * 3] = 0.75 + 0.25 * brightness;
+      catColors[i * 3 + 1] = 0.85 + 0.15 * brightness;
+      catColors[i * 3 + 2] = 1.0;
+      catSizes[i] = 2 + brightness * 6;
+    });
+    const catGeo = new THREE.BufferGeometry();
+    catGeo.setAttribute("position", new THREE.BufferAttribute(catPositions, 3));
+    catGeo.setAttribute("color", new THREE.BufferAttribute(catColors, 3));
+    catGeo.setAttribute("size", new THREE.BufferAttribute(catSizes, 1));
+    const catMat = new THREE.PointsMaterial({
+      size: 5,
+      vertexColors: true,
+      sizeAttenuation: true,
+      transparent: true,
+      opacity: 1,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const catalogStars = new THREE.Points(catGeo, catMat);
+    scene.add(catalogStars);
+
+    // Constellation lines — glowing neon-blue
+    const linePts: number[] = [];
+    for (const [a, b] of CONSTELLATIONS) {
+      const sa = STARS[a];
+      const sb = STARS[b];
+      if (!sa || !sb) continue;
+      const [ax, ay, az] = raDecToVec3(sa.ra, sa.dec, STAR_R - 2);
+      const [bx, by, bz] = raDecToVec3(sb.ra, sb.dec, STAR_R - 2);
+      linePts.push(ax, ay, az, bx, by, bz);
+    }
+    const lineGeo = new THREE.BufferGeometry();
+    lineGeo.setAttribute(
+      "position",
+      new THREE.BufferAttribute(new Float32Array(linePts), 3)
+    );
+    const lineMat = new THREE.LineBasicMaterial({
+      color: 0x4fc3ff,
+      transparent: true,
+      opacity: 0.55,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const constellationLines = new THREE.LineSegments(lineGeo, lineMat);
+    scene.add(constellationLines);
+
     // Milky-way-ish faint band
     const bandGeo = new THREE.SphereGeometry(480, 32, 32);
     const bandMat = new THREE.MeshBasicMaterial({
