@@ -92,6 +92,21 @@ export default function CelestialSphere() {
     renderer.setSize(container.clientWidth, container.clientHeight);
     container.appendChild(renderer.domElement);
 
+    // CSS2D overlay for billboarded planet labels
+    const labelRenderer = new CSS2DRenderer();
+    labelRenderer.setSize(container.clientWidth, container.clientHeight);
+    const labelEl = labelRenderer.domElement;
+    labelEl.style.position = "absolute";
+    labelEl.style.inset = "0";
+    labelEl.style.pointerEvents = "none";
+    container.appendChild(labelEl);
+
+    // Soft lighting so planet textures are visible
+    scene.add(new THREE.AmbientLight(0xffffff, 0.85));
+    const sun = new THREE.DirectionalLight(0xffffff, 1.1);
+    sun.position.set(100, 80, 50);
+    scene.add(sun);
+
     // Stars: random points on a large sphere (inside view)
     const starCount = 6000;
     const positions = new Float32Array(starCount * 3);
