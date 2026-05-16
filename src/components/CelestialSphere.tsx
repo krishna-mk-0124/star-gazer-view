@@ -805,6 +805,39 @@ export default function CelestialSphere() {
     };
   }, [fetchSatTLEs]);
 
+  // Refresh selection coords (az/alt) while panel is open
+  useEffect(() => {
+    if (!selection) return;
+    const tick = () => {
+      const loc = locationRef.current;
+      const date = simDateRef.current;
+      if (selection.kind === "satellite") {
+        const tgt = selectionTargetRef.current;
+        if (tgt?.kind === "satellite") {
+          const s = satellitesRef.current[tgt.idx];
+          if (s && s.lastAz !== undefined && s.lastAlt !== undefined) {
+            setSelection((prev) =>
+              prev ? { ...prev, az: s.lastAz, alt: s.lastAlt } : prev
+            );
+          }
+        }
+      } else if (selection.ra !== undefined && selection.dec !== undefined) {
+        const { az, alt } = raDecToAzAlt(
+          selection.ra,
+          selection.dec,
+          loc.lat,
+          loc.lon,
+          date
+        );
+        setSelection((prev) => (prev ? { ...prev, az, alt } : prev));
+      }
+    };
+    tick();
+    const id = window.setInterval(tick, 1500);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selection?.name, selection?.kind]);
+
   const submitLocation = () => {
     const lat = parseFloat(formLat);
     const lon = parseFloat(formLon);
