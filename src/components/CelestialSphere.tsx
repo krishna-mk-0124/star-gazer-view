@@ -270,6 +270,9 @@ export default function CelestialSphere() {
       const dt = clock.getDelta();
       simTime += dt * speedMap[speedRef.current] * 0.02;
       stars.rotation.y = simTime;
+      catalogStars.rotation.y = simTime;
+      constellationLines.rotation.y = simTime;
+      constellationLines.visible = constellationsRef.current;
 
       // Camera orientation from yaw/pitch
       const dir = new THREE.Vector3(
@@ -296,6 +299,10 @@ export default function CelestialSphere() {
       renderer.dispose();
       starGeo.dispose();
       starMat.dispose();
+      catGeo.dispose();
+      catMat.dispose();
+      lineGeo.dispose();
+      lineMat.dispose();
       if (el.parentNode) el.parentNode.removeChild(el);
     };
   }, []);
