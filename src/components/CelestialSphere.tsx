@@ -880,8 +880,23 @@ export default function CelestialSphere() {
             icon={<Sparkles className="h-4 w-4" />}
             label="Constellations"
           />
+          <HudButton
+            active={false}
+            onClick={() => setQuizOpen(true)}
+            icon={<GraduationCap className="h-4 w-4" />}
+            label="Quiz"
+          />
         </div>
       </div>
+
+      <CelestialInfoPanel
+        selection={selection}
+        onClose={() => {
+          setSelection(null);
+          selectionTargetRef.current = null;
+        }}
+      />
+      <QuizModal open={quizOpen} onOpenChange={setQuizOpen} />
 
       <Dialog open={modalOpen} onOpenChange={setModalOpen}>
         <DialogContent className="border-white/10 bg-black/80 text-white backdrop-blur-xl">
