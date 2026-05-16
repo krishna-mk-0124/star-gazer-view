@@ -379,6 +379,13 @@ export default function CelestialSphere() {
             icon={<Rewind className="h-4 w-4" />}
             label="Rewind"
           />
+          <div className="mx-1 h-6 w-px bg-white/15" />
+          <HudButton
+            active={constellationsVisible}
+            onClick={() => setConstellationsVisible((v) => !v)}
+            icon={<Sparkles className="h-4 w-4" />}
+            label="Constellations"
+          />
         </div>
       </div>
 
