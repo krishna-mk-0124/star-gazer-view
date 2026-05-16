@@ -396,6 +396,70 @@ export default function CelestialSphere() {
         mesh.rotation.y += (mesh.userData.rotPerSec as number) * axisDt;
       });
 
+      // Satellites — propagate TLE, compute az/alt, update mesh + trail
+      const sats = satellitesRef.current;
+      if (sats.length > 0) {
+        const now = simDateRef.current;
+        const gmst = satellite.gstime(now);
+        const loc = locationRef.current;
+        const observer = {
+          longitude: (loc.lon * Math.PI) / 180,
+          latitude: (loc.lat * Math.PI) / 180,
+          height: 0.1, // km
+        };
+        const SAT_R = 440;
+        const pulse = 1 + 0.35 * Math.sin(performance.now() * 0.006);
+        for (const sat of sats) {
+          const pv = satellite.propagate(sat.satrec, now);
+          if (!pv || typeof pv.position === "boolean" || !pv.position) {
+            sat.mesh.visible = false;
+            continue;
+          }
+          const ecf = satellite.eciToEcf(pv.position, gmst);
+          const look = satellite.ecfToLookAngles(observer, ecf);
+          const above = look.elevation > 0;
+          sat.mesh.visible = above;
+          sat.label.visible = above;
+          if (!above) continue;
+          // Az measured from north, clockwise. Convert to scene coords (north = +z, east = +x).
+          const az = look.azimuth;
+          const el = look.elevation;
+          const x = SAT_R * Math.cos(el) * Math.sin(az);
+          const y = SAT_R * Math.sin(el);
+          const z = SAT_R * Math.cos(el) * Math.cos(az);
+          sat.mesh.position.set(x, y, z);
+          sat.mesh.scale.setScalar(pulse);
+
+          // Append to trail (ring buffer)
+          const idx = sat.trailHead * 3;
+          sat.trailPositions[idx] = x;
+          sat.trailPositions[idx + 1] = y;
+          sat.trailPositions[idx + 2] = z;
+          sat.trailHead = (sat.trailHead + 1) % (sat.trailPositions.length / 3);
+          sat.trailCount = Math.min(
+            sat.trailCount + 1,
+            sat.trailPositions.length / 3
+          );
+          // Rebuild line as ordered slice starting from oldest
+          const ordered = new Float32Array(sat.trailCount * 3);
+          const cap = sat.trailPositions.length / 3;
+          const start =
+            sat.trailCount < cap ? 0 : sat.trailHead;
+          for (let i = 0; i < sat.trailCount; i++) {
+            const src = ((start + i) % cap) * 3;
+            ordered[i * 3] = sat.trailPositions[src];
+            ordered[i * 3 + 1] = sat.trailPositions[src + 1];
+            ordered[i * 3 + 2] = sat.trailPositions[src + 2];
+          }
+          sat.trailGeo.setAttribute(
+            "position",
+            new THREE.BufferAttribute(ordered, 3)
+          );
+          sat.trailGeo.attributes.position.needsUpdate = true;
+          sat.trailGeo.setDrawRange(0, sat.trailCount);
+        }
+      }
+
       // Camera orientation from yaw/pitch
       const dir = new THREE.Vector3(
         Math.sin(yaw) * Math.cos(pitch),
