@@ -19,6 +19,8 @@ import { MapPin, Pause, Play, FastForward, Rewind, Sparkles } from "lucide-react
 import { STARS, CONSTELLATIONS, raDecToVec3 } from "@/lib/starCatalog";
 import { PLANETS } from "@/lib/planets";
 import { getPlanetPositions } from "@/lib/horizons.functions";
+import { getSatelliteTLEs } from "@/lib/satellites.functions";
+import * as satellite from "satellite.js";
 
 type Location = { city: string; lat: number; lon: number };
 
