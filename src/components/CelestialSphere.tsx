@@ -495,6 +495,13 @@ export default function CelestialSphere() {
         (m.material as THREE.Material).dispose();
       });
       planetMeshesRef.current = new Map();
+      satellitesRef.current.forEach((s) => {
+        s.mesh.geometry.dispose();
+        (s.mesh.material as THREE.Material).dispose();
+        s.trailGeo.dispose();
+      });
+      satellitesRef.current = [];
+      satGroupRef.current = null;
       if (el.parentNode) el.parentNode.removeChild(el);
       if (labelEl.parentNode) labelEl.parentNode.removeChild(labelEl);
     };
