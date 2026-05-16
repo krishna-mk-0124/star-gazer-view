@@ -40,11 +40,6 @@ export default function CelestialSphere() {
   const [formCity, setFormCity] = useState("");
   const [formLat, setFormLat] = useState("");
   const [formLon, setFormLon] = useState("");
-  const speedRef = useRef<Speed>(speed);
-
-  useEffect(() => {
-    speedRef.current = speed;
-  }, [speed]);
 
   // Geolocation on mount
   useEffect(() => {
