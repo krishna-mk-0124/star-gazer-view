@@ -54,6 +54,23 @@ export default function CelestialSphere() {
   const simDateRef = useRef<Date>(new Date());
   const planetMeshesRef = useRef<Map<string, THREE.Mesh>>(new Map());
   const fetchPositions = useServerFn(getPlanetPositions);
+  const fetchSatTLEs = useServerFn(getSatelliteTLEs);
+  const locationRef = useRef(location);
+  useEffect(() => {
+    locationRef.current = location;
+  }, [location]);
+  type SatRuntime = {
+    name: string;
+    satrec: satellite.SatRec;
+    mesh: THREE.Mesh;
+    label: CSS2DObject;
+    trailGeo: THREE.BufferGeometry;
+    trailPositions: Float32Array;
+    trailCount: number;
+    trailHead: number;
+  };
+  const satellitesRef = useRef<SatRuntime[]>([]);
+  const satGroupRef = useRef<THREE.Group | null>(null);
 
   // Geolocation on mount
   useEffect(() => {
