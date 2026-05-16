@@ -15,12 +15,15 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { MapPin, Pause, Play, FastForward, Rewind, Sparkles } from "lucide-react";
+import { MapPin, Pause, Play, FastForward, Rewind, Sparkles, GraduationCap } from "lucide-react";
 import { STARS, CONSTELLATIONS, raDecToVec3 } from "@/lib/starCatalog";
 import { PLANETS } from "@/lib/planets";
 import { getPlanetPositions } from "@/lib/horizons.functions";
 import { getSatelliteTLEs } from "@/lib/satellites.functions";
 import * as satellite from "satellite.js";
+import { CelestialInfoPanel, type CelestialSelection } from "@/components/CelestialInfoPanel";
+import { QuizModal } from "@/components/QuizModal";
+import { raDecToAzAlt } from "@/lib/astro";
 
 type Location = { city: string; lat: number; lon: number };
 
@@ -68,9 +71,23 @@ export default function CelestialSphere() {
     trailPositions: Float32Array;
     trailCount: number;
     trailHead: number;
+    lastAz?: number;
+    lastAlt?: number;
   };
   const satellitesRef = useRef<SatRuntime[]>([]);
   const satGroupRef = useRef<THREE.Group | null>(null);
+
+  // Selection / interaction state
+  const [selection, setSelection] = useState<CelestialSelection | null>(null);
+  const [quizOpen, setQuizOpen] = useState(false);
+  type SelectionTarget =
+    | { kind: "star"; key: string; getWorldPos: (out: THREE.Vector3) => THREE.Vector3 }
+    | { kind: "planet"; id: string; getWorldPos: (out: THREE.Vector3) => THREE.Vector3 }
+    | { kind: "satellite"; idx: number; getWorldPos: (out: THREE.Vector3) => THREE.Vector3 };
+  const selectionTargetRef = useRef<SelectionTarget | null>(null);
+  const targetRingRef = useRef<THREE.Mesh | null>(null);
+  // Bridge to fire raycasts from React click handlers into scene-scope code
+  const tryPickRef = useRef<(ndcX: number, ndcY: number) => void>(() => {});
 
   // Geolocation on mount
   useEffect(() => {
@@ -308,13 +325,17 @@ export default function CelestialSphere() {
     let pitch = 0;
     const pitchLimit = Math.PI / 2 - 0.05;
     let isDragging = false;
+    let downX = 0;
+    let downY = 0;
     let lastX = 0;
     let lastY = 0;
+    let dragDist = 0;
 
     const onDown = (x: number, y: number) => {
       isDragging = true;
-      lastX = x;
-      lastY = y;
+      downX = lastX = x;
+      downY = lastY = y;
+      dragDist = 0;
     };
     const onMove = (x: number, y: number) => {
       if (!isDragging) return;
@@ -322,6 +343,7 @@ export default function CelestialSphere() {
       const dy = y - lastY;
       lastX = x;
       lastY = y;
+      dragDist += Math.hypot(dx, dy);
       yaw -= dx * 0.003;
       pitch -= dy * 0.003;
       pitch = Math.max(-pitchLimit, Math.min(pitchLimit, pitch));
@@ -330,9 +352,113 @@ export default function CelestialSphere() {
       isDragging = false;
     };
 
+    // Raycaster — click to select stars / planets / satellites
+    const raycaster = new THREE.Raycaster();
+    raycaster.params.Points = { threshold: 6 };
+    const ndc = new THREE.Vector2();
+
+    // Pulsing target ring overlay
+    const ringGeoSel = new THREE.RingGeometry(10, 12, 64);
+    const ringMatSel = new THREE.MeshBasicMaterial({
+      color: 0x4fc3ff,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.9,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const targetRing = new THREE.Mesh(ringGeoSel, ringMatSel);
+    targetRing.visible = false;
+    scene.add(targetRing);
+    targetRingRef.current = targetRing;
+
+    const tryPick = (ndcX: number, ndcY: number) => {
+      ndc.set(ndcX, ndcY);
+      raycaster.setFromCamera(ndc, camera);
+
+      // 1) Satellites first (closer + always interesting)
+      const sats = satellitesRef.current;
+      const satMeshes = sats.map((s) => s.mesh).filter((m) => m.visible);
+      const satHits = raycaster.intersectObjects(satMeshes, false);
+      if (satHits.length > 0) {
+        const hitMesh = satHits[0].object as THREE.Mesh;
+        const idx = sats.findIndex((s) => s.mesh === hitMesh);
+        if (idx >= 0) {
+          selectionTargetRef.current = {
+            kind: "satellite",
+            idx,
+            getWorldPos: (out) => sats[idx].mesh.getWorldPosition(out),
+          };
+          setSelection({ kind: "satellite", name: sats[idx].name });
+          return;
+        }
+      }
+
+      // 2) Planets
+      const planetMeshes = Array.from(localMeshes.values());
+      const planetHits = raycaster.intersectObjects(planetMeshes, false);
+      if (planetHits.length > 0) {
+        const hitMesh = planetHits[0].object as THREE.Mesh;
+        const planet = PLANETS.find((p) => localMeshes.get(p.id) === hitMesh);
+        if (planet) {
+          selectionTargetRef.current = {
+            kind: "planet",
+            id: planet.id,
+            getWorldPos: (out) => hitMesh.getWorldPosition(out),
+          };
+          setSelection({
+            kind: "planet",
+            name: planet.name,
+            ra: hitMesh.userData.ra,
+            dec: hitMesh.userData.dec,
+            wikiTitle: planet.name,
+            nasaQuery: planet.name,
+          });
+          return;
+        }
+      }
+
+      // 3) Named catalog stars
+      const starHits = raycaster.intersectObject(catalogStars, false);
+      if (starHits.length > 0 && starHits[0].index !== undefined) {
+        const i = starHits[0].index;
+        const key = catalogKeys[i];
+        const s = STARS[key];
+        if (s) {
+          selectionTargetRef.current = {
+            kind: "star",
+            key,
+            getWorldPos: (out) => {
+              const attr = catalogStars.geometry.getAttribute(
+                "position"
+              ) as THREE.BufferAttribute;
+              out.fromBufferAttribute(attr, i);
+              return out.applyMatrix4(catalogStars.matrixWorld);
+            },
+          };
+          setSelection({
+            kind: "star",
+            name: s.name,
+            ra: s.ra,
+            dec: s.dec,
+            mag: s.mag,
+          });
+          return;
+        }
+      }
+    };
+    tryPickRef.current = tryPick;
+
     const el = renderer.domElement;
     const mouseDown = (e: MouseEvent) => onDown(e.clientX, e.clientY);
     const mouseMove = (e: MouseEvent) => onMove(e.clientX, e.clientY);
+    const onClick = (e: MouseEvent) => {
+      if (dragDist > 5) return; // it was a drag, not a click
+      const rect = el.getBoundingClientRect();
+      const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      tryPick(x, y);
+    };
     const touchStart = (e: TouchEvent) => {
       const t = e.touches[0];
       onDown(t.clientX, t.clientY);
@@ -341,12 +467,23 @@ export default function CelestialSphere() {
       const t = e.touches[0];
       onMove(t.clientX, t.clientY);
     };
+    const touchEnd = (e: TouchEvent) => {
+      if (dragDist <= 5 && e.changedTouches[0]) {
+        const t = e.changedTouches[0];
+        const rect = el.getBoundingClientRect();
+        const x = ((t.clientX - rect.left) / rect.width) * 2 - 1;
+        const y = -((t.clientY - rect.top) / rect.height) * 2 + 1;
+        tryPick(x, y);
+      }
+      onUp();
+    };
     el.addEventListener("mousedown", mouseDown);
     window.addEventListener("mousemove", mouseMove);
     window.addEventListener("mouseup", onUp);
+    el.addEventListener("click", onClick);
     el.addEventListener("touchstart", touchStart, { passive: true });
     el.addEventListener("touchmove", touchMove, { passive: true });
-    el.addEventListener("touchend", onUp);
+    el.addEventListener("touchend", touchEnd);
 
     // Sky rotation simulation
     let simTime = 0;
@@ -429,6 +566,8 @@ export default function CelestialSphere() {
           const z = SAT_R * Math.cos(el) * Math.cos(az);
           sat.mesh.position.set(x, y, z);
           sat.mesh.scale.setScalar(pulse);
+          sat.lastAz = az;
+          sat.lastAlt = el;
 
           // Append to trail (ring buffer)
           const idx = sat.trailHead * 3;
@@ -460,6 +599,20 @@ export default function CelestialSphere() {
         }
       }
 
+      // Update target ring position to follow the current selection
+      if (selectionTargetRef.current) {
+        const out = new THREE.Vector3();
+        selectionTargetRef.current.getWorldPos(out);
+        targetRing.position.copy(out);
+        targetRing.lookAt(camera.position);
+        const p = 1 + 0.15 * Math.sin(performance.now() * 0.005);
+        targetRing.scale.setScalar(p);
+        ringMatSel.opacity = 0.55 + 0.35 * (0.5 + 0.5 * Math.sin(performance.now() * 0.005));
+        targetRing.visible = true;
+      } else {
+        targetRing.visible = false;
+      }
+
       // Camera orientation from yaw/pitch
       const dir = new THREE.Vector3(
         Math.sin(yaw) * Math.cos(pitch),
@@ -480,9 +633,13 @@ export default function CelestialSphere() {
       el.removeEventListener("mousedown", mouseDown);
       window.removeEventListener("mousemove", mouseMove);
       window.removeEventListener("mouseup", onUp);
+      el.removeEventListener("click", onClick);
       el.removeEventListener("touchstart", touchStart);
       el.removeEventListener("touchmove", touchMove);
-      el.removeEventListener("touchend", onUp);
+      el.removeEventListener("touchend", touchEnd);
+      targetRingRef.current = null;
+      ringGeoSel.dispose();
+      ringMatSel.dispose();
       renderer.dispose();
       starGeo.dispose();
       starMat.dispose();
@@ -528,6 +685,8 @@ export default function CelestialSphere() {
           const raHours = pos.ra / 15;
           const [x, y, z] = raDecToVec3(raHours, pos.dec, PLANET_R);
           mesh.position.set(x, y, z);
+          mesh.userData.ra = raHours;
+          mesh.userData.dec = pos.dec;
           // Tilt mesh so its "north pole" points toward celestial north
           mesh.up.set(0, 1, 0);
         }
@@ -646,6 +805,39 @@ export default function CelestialSphere() {
     };
   }, [fetchSatTLEs]);
 
+  // Refresh selection coords (az/alt) while panel is open
+  useEffect(() => {
+    if (!selection) return;
+    const tick = () => {
+      const loc = locationRef.current;
+      const date = simDateRef.current;
+      if (selection.kind === "satellite") {
+        const tgt = selectionTargetRef.current;
+        if (tgt?.kind === "satellite") {
+          const s = satellitesRef.current[tgt.idx];
+          if (s && s.lastAz !== undefined && s.lastAlt !== undefined) {
+            setSelection((prev) =>
+              prev ? { ...prev, az: s.lastAz, alt: s.lastAlt } : prev
+            );
+          }
+        }
+      } else if (selection.ra !== undefined && selection.dec !== undefined) {
+        const { az, alt } = raDecToAzAlt(
+          selection.ra,
+          selection.dec,
+          loc.lat,
+          loc.lon,
+          date
+        );
+        setSelection((prev) => (prev ? { ...prev, az, alt } : prev));
+      }
+    };
+    tick();
+    const id = window.setInterval(tick, 1500);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selection?.name, selection?.kind]);
+
   const submitLocation = () => {
     const lat = parseFloat(formLat);
     const lon = parseFloat(formLon);
@@ -725,8 +917,23 @@ export default function CelestialSphere() {
             icon={<Sparkles className="h-4 w-4" />}
             label="Constellations"
           />
+          <HudButton
+            active={false}
+            onClick={() => setQuizOpen(true)}
+            icon={<GraduationCap className="h-4 w-4" />}
+            label="Quiz"
+          />
         </div>
       </div>
+
+      <CelestialInfoPanel
+        selection={selection}
+        onClose={() => {
+          setSelection(null);
+          selectionTargetRef.current = null;
+        }}
+      />
+      <QuizModal open={quizOpen} onOpenChange={setQuizOpen} />
 
       <Dialog open={modalOpen} onOpenChange={setModalOpen}>
         <DialogContent className="border-white/10 bg-black/80 text-white backdrop-blur-xl">
