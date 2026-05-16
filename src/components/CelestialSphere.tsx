@@ -544,6 +544,108 @@ export default function CelestialSphere() {
     };
   }, [fetchPositions]);
 
+  // Satellite TLE loader — fetch once + refresh hourly
+  useEffect(() => {
+    let cancelled = false;
+
+    const load = async () => {
+      try {
+        const res = await fetchSatTLEs();
+        if (cancelled) return;
+        const group = satGroupRef.current;
+        if (!group) return;
+
+        // Dispose previous
+        satellitesRef.current.forEach((s) => {
+          group.remove(s.mesh);
+          group.remove(s.mesh); // safety
+          s.mesh.geometry.dispose();
+          (s.mesh.material as THREE.Material).dispose();
+          s.trailGeo.dispose();
+        });
+        satellitesRef.current = [];
+
+        const colors: Record<string, number> = {
+          iss: 0x4fc3ff,
+          hubble: 0xff6bd6,
+        };
+
+        for (const s of res.satellites) {
+          let satrec: satellite.SatRec;
+          try {
+            satrec = satellite.twoline2satrec(s.line1, s.line2);
+          } catch {
+            continue;
+          }
+          const color = colors[s.id] ?? 0x6affc9;
+
+          // Glowing pulsing satellite mesh
+          const geo = new THREE.SphereGeometry(2.2, 16, 16);
+          const mat = new THREE.MeshBasicMaterial({
+            color,
+            transparent: true,
+            opacity: 1,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+          });
+          const mesh = new THREE.Mesh(geo, mat);
+          mesh.visible = false;
+
+          // Label
+          const labelDiv = document.createElement("div");
+          labelDiv.textContent = s.name;
+          labelDiv.className =
+            "px-2 py-0.5 rounded-md text-[10px] font-medium tracking-wide text-white/95 bg-black/60 border border-white/20 backdrop-blur-sm whitespace-nowrap";
+          labelDiv.style.boxShadow = `0 0 12px ${"#" + color.toString(16).padStart(6, "0")}55`;
+          const label = new CSS2DObject(labelDiv);
+          label.position.set(0, 6, 0);
+          mesh.add(label);
+
+          group.add(mesh);
+
+          // Trail line — neon glowing
+          const MAX_TRAIL = 240;
+          const trailPositions = new Float32Array(MAX_TRAIL * 3);
+          const trailGeo = new THREE.BufferGeometry();
+          trailGeo.setAttribute(
+            "position",
+            new THREE.BufferAttribute(trailPositions, 3)
+          );
+          trailGeo.setDrawRange(0, 0);
+          const trailMat = new THREE.LineBasicMaterial({
+            color,
+            transparent: true,
+            opacity: 0.7,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+          });
+          const trail = new THREE.Line(trailGeo, trailMat);
+          group.add(trail);
+
+          satellitesRef.current.push({
+            name: s.name,
+            satrec,
+            mesh,
+            label,
+            trailGeo,
+            trailPositions,
+            trailCount: 0,
+            trailHead: 0,
+          });
+        }
+      } catch (err) {
+        console.warn("TLE fetch failed", err);
+      }
+    };
+
+    load();
+    const id = window.setInterval(load, 60 * 60 * 1000); // hourly refresh
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [fetchSatTLEs]);
+
   const submitLocation = () => {
     const lat = parseFloat(formLat);
     const lon = parseFloat(formLon);
