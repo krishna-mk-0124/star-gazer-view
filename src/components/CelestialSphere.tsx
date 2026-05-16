@@ -681,6 +681,8 @@ export default function CelestialSphere() {
           const raHours = pos.ra / 15;
           const [x, y, z] = raDecToVec3(raHours, pos.dec, PLANET_R);
           mesh.position.set(x, y, z);
+          mesh.userData.ra = raHours;
+          mesh.userData.dec = pos.dec;
           // Tilt mesh so its "north pole" points toward celestial north
           mesh.up.set(0, 1, 0);
         }
