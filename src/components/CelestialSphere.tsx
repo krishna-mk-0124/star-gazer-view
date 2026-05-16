@@ -595,6 +595,20 @@ export default function CelestialSphere() {
         }
       }
 
+      // Update target ring position to follow the current selection
+      if (selectionTargetRef.current) {
+        const out = new THREE.Vector3();
+        selectionTargetRef.current.getWorldPos(out);
+        targetRing.position.copy(out);
+        targetRing.lookAt(camera.position);
+        const p = 1 + 0.15 * Math.sin(performance.now() * 0.005);
+        targetRing.scale.setScalar(p);
+        ringMatSel.opacity = 0.55 + 0.35 * (0.5 + 0.5 * Math.sin(performance.now() * 0.005));
+        targetRing.visible = true;
+      } else {
+        targetRing.visible = false;
+      }
+
       // Camera orientation from yaw/pitch
       const dir = new THREE.Vector3(
         Math.sin(yaw) * Math.cos(pitch),
@@ -615,9 +629,13 @@ export default function CelestialSphere() {
       el.removeEventListener("mousedown", mouseDown);
       window.removeEventListener("mousemove", mouseMove);
       window.removeEventListener("mouseup", onUp);
+      el.removeEventListener("click", onClick);
       el.removeEventListener("touchstart", touchStart);
       el.removeEventListener("touchmove", touchMove);
-      el.removeEventListener("touchend", onUp);
+      el.removeEventListener("touchend", touchEnd);
+      targetRingRef.current = null;
+      ringGeoSel.dispose();
+      ringMatSel.dispose();
       renderer.dispose();
       starGeo.dispose();
       starMat.dispose();
