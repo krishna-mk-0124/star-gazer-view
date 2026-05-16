@@ -19,6 +19,8 @@ import { MapPin, Pause, Play, FastForward, Rewind, Sparkles } from "lucide-react
 import { STARS, CONSTELLATIONS, raDecToVec3 } from "@/lib/starCatalog";
 import { PLANETS } from "@/lib/planets";
 import { getPlanetPositions } from "@/lib/horizons.functions";
+import { getSatelliteTLEs } from "@/lib/satellites.functions";
+import * as satellite from "satellite.js";
 
 type Location = { city: string; lat: number; lon: number };
 
@@ -52,6 +54,23 @@ export default function CelestialSphere() {
   const simDateRef = useRef<Date>(new Date());
   const planetMeshesRef = useRef<Map<string, THREE.Mesh>>(new Map());
   const fetchPositions = useServerFn(getPlanetPositions);
+  const fetchSatTLEs = useServerFn(getSatelliteTLEs);
+  const locationRef = useRef(location);
+  useEffect(() => {
+    locationRef.current = location;
+  }, [location]);
+  type SatRuntime = {
+    name: string;
+    satrec: satellite.SatRec;
+    mesh: THREE.Mesh;
+    label: CSS2DObject;
+    trailGeo: THREE.BufferGeometry;
+    trailPositions: Float32Array;
+    trailCount: number;
+    trailHead: number;
+  };
+  const satellitesRef = useRef<SatRuntime[]>([]);
+  const satGroupRef = useRef<THREE.Group | null>(null);
 
   // Geolocation on mount
   useEffect(() => {
@@ -257,6 +276,11 @@ export default function CelestialSphere() {
     }
     planetMeshesRef.current = localMeshes;
 
+    // Satellite group (meshes + trails) — populated by TLE fetch effect
+    const satGroup = new THREE.Group();
+    scene.add(satGroup);
+    satGroupRef.current = satGroup;
+
     // Milky-way-ish faint band
     const bandGeo = new THREE.SphereGeometry(480, 32, 32);
     const bandMat = new THREE.MeshBasicMaterial({
@@ -372,6 +396,70 @@ export default function CelestialSphere() {
         mesh.rotation.y += (mesh.userData.rotPerSec as number) * axisDt;
       });
 
+      // Satellites — propagate TLE, compute az/alt, update mesh + trail
+      const sats = satellitesRef.current;
+      if (sats.length > 0) {
+        const now = simDateRef.current;
+        const gmst = satellite.gstime(now);
+        const loc = locationRef.current;
+        const observer = {
+          longitude: (loc.lon * Math.PI) / 180,
+          latitude: (loc.lat * Math.PI) / 180,
+          height: 0.1, // km
+        };
+        const SAT_R = 440;
+        const pulse = 1 + 0.35 * Math.sin(performance.now() * 0.006);
+        for (const sat of sats) {
+          const pv = satellite.propagate(sat.satrec, now);
+          if (!pv || typeof pv.position === "boolean" || !pv.position) {
+            sat.mesh.visible = false;
+            continue;
+          }
+          const ecf = satellite.eciToEcf(pv.position, gmst);
+          const look = satellite.ecfToLookAngles(observer, ecf);
+          const above = look.elevation > 0;
+          sat.mesh.visible = above;
+          sat.label.visible = above;
+          if (!above) continue;
+          // Az measured from north, clockwise. Convert to scene coords (north = +z, east = +x).
+          const az = look.azimuth;
+          const el = look.elevation;
+          const x = SAT_R * Math.cos(el) * Math.sin(az);
+          const y = SAT_R * Math.sin(el);
+          const z = SAT_R * Math.cos(el) * Math.cos(az);
+          sat.mesh.position.set(x, y, z);
+          sat.mesh.scale.setScalar(pulse);
+
+          // Append to trail (ring buffer)
+          const idx = sat.trailHead * 3;
+          sat.trailPositions[idx] = x;
+          sat.trailPositions[idx + 1] = y;
+          sat.trailPositions[idx + 2] = z;
+          sat.trailHead = (sat.trailHead + 1) % (sat.trailPositions.length / 3);
+          sat.trailCount = Math.min(
+            sat.trailCount + 1,
+            sat.trailPositions.length / 3
+          );
+          // Rebuild line as ordered slice starting from oldest
+          const ordered = new Float32Array(sat.trailCount * 3);
+          const cap = sat.trailPositions.length / 3;
+          const start =
+            sat.trailCount < cap ? 0 : sat.trailHead;
+          for (let i = 0; i < sat.trailCount; i++) {
+            const src = ((start + i) % cap) * 3;
+            ordered[i * 3] = sat.trailPositions[src];
+            ordered[i * 3 + 1] = sat.trailPositions[src + 1];
+            ordered[i * 3 + 2] = sat.trailPositions[src + 2];
+          }
+          sat.trailGeo.setAttribute(
+            "position",
+            new THREE.BufferAttribute(ordered, 3)
+          );
+          sat.trailGeo.attributes.position.needsUpdate = true;
+          sat.trailGeo.setDrawRange(0, sat.trailCount);
+        }
+      }
+
       // Camera orientation from yaw/pitch
       const dir = new THREE.Vector3(
         Math.sin(yaw) * Math.cos(pitch),
@@ -407,6 +495,13 @@ export default function CelestialSphere() {
         (m.material as THREE.Material).dispose();
       });
       planetMeshesRef.current = new Map();
+      satellitesRef.current.forEach((s) => {
+        s.mesh.geometry.dispose();
+        (s.mesh.material as THREE.Material).dispose();
+        s.trailGeo.dispose();
+      });
+      satellitesRef.current = [];
+      satGroupRef.current = null;
       if (el.parentNode) el.parentNode.removeChild(el);
       if (labelEl.parentNode) labelEl.parentNode.removeChild(labelEl);
     };
@@ -448,6 +543,108 @@ export default function CelestialSphere() {
       window.clearInterval(id);
     };
   }, [fetchPositions]);
+
+  // Satellite TLE loader — fetch once + refresh hourly
+  useEffect(() => {
+    let cancelled = false;
+
+    const load = async () => {
+      try {
+        const res = await fetchSatTLEs();
+        if (cancelled) return;
+        const group = satGroupRef.current;
+        if (!group) return;
+
+        // Dispose previous
+        satellitesRef.current.forEach((s) => {
+          group.remove(s.mesh);
+          group.remove(s.mesh); // safety
+          s.mesh.geometry.dispose();
+          (s.mesh.material as THREE.Material).dispose();
+          s.trailGeo.dispose();
+        });
+        satellitesRef.current = [];
+
+        const colors: Record<string, number> = {
+          iss: 0x4fc3ff,
+          hubble: 0xff6bd6,
+        };
+
+        for (const s of res.satellites) {
+          let satrec: satellite.SatRec;
+          try {
+            satrec = satellite.twoline2satrec(s.line1, s.line2);
+          } catch {
+            continue;
+          }
+          const color = colors[s.id] ?? 0x6affc9;
+
+          // Glowing pulsing satellite mesh
+          const geo = new THREE.SphereGeometry(2.2, 16, 16);
+          const mat = new THREE.MeshBasicMaterial({
+            color,
+            transparent: true,
+            opacity: 1,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+          });
+          const mesh = new THREE.Mesh(geo, mat);
+          mesh.visible = false;
+
+          // Label
+          const labelDiv = document.createElement("div");
+          labelDiv.textContent = s.name;
+          labelDiv.className =
+            "px-2 py-0.5 rounded-md text-[10px] font-medium tracking-wide text-white/95 bg-black/60 border border-white/20 backdrop-blur-sm whitespace-nowrap";
+          labelDiv.style.boxShadow = `0 0 12px ${"#" + color.toString(16).padStart(6, "0")}55`;
+          const label = new CSS2DObject(labelDiv);
+          label.position.set(0, 6, 0);
+          mesh.add(label);
+
+          group.add(mesh);
+
+          // Trail line — neon glowing
+          const MAX_TRAIL = 240;
+          const trailPositions = new Float32Array(MAX_TRAIL * 3);
+          const trailGeo = new THREE.BufferGeometry();
+          trailGeo.setAttribute(
+            "position",
+            new THREE.BufferAttribute(trailPositions, 3)
+          );
+          trailGeo.setDrawRange(0, 0);
+          const trailMat = new THREE.LineBasicMaterial({
+            color,
+            transparent: true,
+            opacity: 0.7,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+          });
+          const trail = new THREE.Line(trailGeo, trailMat);
+          group.add(trail);
+
+          satellitesRef.current.push({
+            name: s.name,
+            satrec,
+            mesh,
+            label,
+            trailGeo,
+            trailPositions,
+            trailCount: 0,
+            trailHead: 0,
+          });
+        }
+      } catch (err) {
+        console.warn("TLE fetch failed", err);
+      }
+    };
+
+    load();
+    const id = window.setInterval(load, 60 * 60 * 1000); // hourly refresh
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [fetchSatTLEs]);
 
   const submitLocation = () => {
     const lat = parseFloat(formLat);
