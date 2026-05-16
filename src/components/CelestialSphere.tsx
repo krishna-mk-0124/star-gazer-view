@@ -10,7 +10,8 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { MapPin, Pause, Play, FastForward, Rewind } from "lucide-react";
+import { MapPin, Pause, Play, FastForward, Rewind, Sparkles } from "lucide-react";
+import { STARS, CONSTELLATIONS, raDecToVec3 } from "@/lib/starCatalog";
 
 type Location = { city: string; lat: number; lon: number };
 
@@ -26,15 +27,19 @@ export default function CelestialSphere() {
   const containerRef = useRef<HTMLDivElement>(null);
   const [location, setLocation] = useState<Location>(DEFAULT_LOCATION);
   const [speed, setSpeed] = useState<Speed>("real");
+  const [constellationsVisible, setConstellationsVisible] = useState(true);
+  const speedRef = useRef<Speed>("real");
+  const constellationsRef = useRef(true);
+  useEffect(() => {
+    speedRef.current = speed;
+  }, [speed]);
+  useEffect(() => {
+    constellationsRef.current = constellationsVisible;
+  }, [constellationsVisible]);
   const [modalOpen, setModalOpen] = useState(false);
   const [formCity, setFormCity] = useState("");
   const [formLat, setFormLat] = useState("");
   const [formLon, setFormLon] = useState("");
-  const speedRef = useRef<Speed>(speed);
-
-  useEffect(() => {
-    speedRef.current = speed;
-  }, [speed]);
 
   // Geolocation on mount
   useEffect(() => {
@@ -113,6 +118,67 @@ export default function CelestialSphere() {
     });
     const stars = new THREE.Points(starGeo, starMat);
     scene.add(stars);
+
+    // Named catalog stars — sized & tinted by magnitude (blue-white)
+    const STAR_R = 490;
+    const catalogKeys = Object.keys(STARS);
+    const catPositions = new Float32Array(catalogKeys.length * 3);
+    const catColors = new Float32Array(catalogKeys.length * 3);
+    const catSizes = new Float32Array(catalogKeys.length);
+    catalogKeys.forEach((key, i) => {
+      const s = STARS[key];
+      const [x, y, z] = raDecToVec3(s.ra, s.dec, STAR_R);
+      catPositions[i * 3] = x;
+      catPositions[i * 3 + 1] = y;
+      catPositions[i * 3 + 2] = z;
+      // Brightness from magnitude: lower mag = brighter
+      const brightness = Math.max(0.35, Math.min(1, (4 - s.mag) / 5));
+      // Blue-white tint
+      catColors[i * 3] = 0.75 + 0.25 * brightness;
+      catColors[i * 3 + 1] = 0.85 + 0.15 * brightness;
+      catColors[i * 3 + 2] = 1.0;
+      catSizes[i] = 2 + brightness * 6;
+    });
+    const catGeo = new THREE.BufferGeometry();
+    catGeo.setAttribute("position", new THREE.BufferAttribute(catPositions, 3));
+    catGeo.setAttribute("color", new THREE.BufferAttribute(catColors, 3));
+    catGeo.setAttribute("size", new THREE.BufferAttribute(catSizes, 1));
+    const catMat = new THREE.PointsMaterial({
+      size: 5,
+      vertexColors: true,
+      sizeAttenuation: true,
+      transparent: true,
+      opacity: 1,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const catalogStars = new THREE.Points(catGeo, catMat);
+    scene.add(catalogStars);
+
+    // Constellation lines — glowing neon-blue
+    const linePts: number[] = [];
+    for (const [a, b] of CONSTELLATIONS) {
+      const sa = STARS[a];
+      const sb = STARS[b];
+      if (!sa || !sb) continue;
+      const [ax, ay, az] = raDecToVec3(sa.ra, sa.dec, STAR_R - 2);
+      const [bx, by, bz] = raDecToVec3(sb.ra, sb.dec, STAR_R - 2);
+      linePts.push(ax, ay, az, bx, by, bz);
+    }
+    const lineGeo = new THREE.BufferGeometry();
+    lineGeo.setAttribute(
+      "position",
+      new THREE.BufferAttribute(new Float32Array(linePts), 3)
+    );
+    const lineMat = new THREE.LineBasicMaterial({
+      color: 0x4fc3ff,
+      transparent: true,
+      opacity: 0.55,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const constellationLines = new THREE.LineSegments(lineGeo, lineMat);
+    scene.add(constellationLines);
 
     // Milky-way-ish faint band
     const bandGeo = new THREE.SphereGeometry(480, 32, 32);
@@ -204,6 +270,9 @@ export default function CelestialSphere() {
       const dt = clock.getDelta();
       simTime += dt * speedMap[speedRef.current] * 0.02;
       stars.rotation.y = simTime;
+      catalogStars.rotation.y = simTime;
+      constellationLines.rotation.y = simTime;
+      constellationLines.visible = constellationsRef.current;
 
       // Camera orientation from yaw/pitch
       const dir = new THREE.Vector3(
@@ -230,6 +299,10 @@ export default function CelestialSphere() {
       renderer.dispose();
       starGeo.dispose();
       starMat.dispose();
+      catGeo.dispose();
+      catMat.dispose();
+      lineGeo.dispose();
+      lineMat.dispose();
       if (el.parentNode) el.parentNode.removeChild(el);
     };
   }, []);
@@ -305,6 +378,13 @@ export default function CelestialSphere() {
             onClick={() => setSpeed("rewind")}
             icon={<Rewind className="h-4 w-4" />}
             label="Rewind"
+          />
+          <div className="mx-1 h-6 w-px bg-white/15" />
+          <HudButton
+            active={constellationsVisible}
+            onClick={() => setConstellationsVisible((v) => !v)}
+            icon={<Sparkles className="h-4 w-4" />}
+            label="Constellations"
           />
         </div>
       </div>
