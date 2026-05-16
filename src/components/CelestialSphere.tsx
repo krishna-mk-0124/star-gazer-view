@@ -276,6 +276,11 @@ export default function CelestialSphere() {
     }
     planetMeshesRef.current = localMeshes;
 
+    // Satellite group (meshes + trails) — populated by TLE fetch effect
+    const satGroup = new THREE.Group();
+    scene.add(satGroup);
+    satGroupRef.current = satGroup;
+
     // Milky-way-ish faint band
     const bandGeo = new THREE.SphereGeometry(480, 32, 32);
     const bandMat = new THREE.MeshBasicMaterial({
