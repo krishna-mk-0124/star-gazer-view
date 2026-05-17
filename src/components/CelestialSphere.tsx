@@ -36,7 +36,7 @@ import {
   type SatelliteMeta,
 } from "@/components/CelestialInfoPanel";
 import { QuizModal } from "@/components/QuizModal";
-import { raDecToAzAlt, radToDeg } from "@/lib/astro";
+import { raDecToAzAlt } from "@/lib/astro";
 
 type Location = { city: string; lat: number; lon: number };
 
