@@ -1138,4 +1138,3 @@ function HudButton({
 }
 
 // Suppress unused import warnings if any util is conditionally used
-void radToDeg;
