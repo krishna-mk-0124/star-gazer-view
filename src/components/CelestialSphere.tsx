@@ -15,15 +15,28 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { MapPin, Pause, Play, FastForward, Rewind, Sparkles, GraduationCap } from "lucide-react";
+import {
+  MapPin,
+  Pause,
+  Play,
+  FastForward,
+  Rewind,
+  Sparkles,
+  GraduationCap,
+  Mountain,
+} from "lucide-react";
 import { STARS, CONSTELLATIONS, raDecToVec3 } from "@/lib/starCatalog";
 import { PLANETS } from "@/lib/planets";
 import { getPlanetPositions } from "@/lib/horizons.functions";
 import { getSatelliteTLEs } from "@/lib/satellites.functions";
 import * as satellite from "satellite.js";
-import { CelestialInfoPanel, type CelestialSelection } from "@/components/CelestialInfoPanel";
+import {
+  CelestialInfoPanel,
+  type CelestialSelection,
+  type SatelliteMeta,
+} from "@/components/CelestialInfoPanel";
 import { QuizModal } from "@/components/QuizModal";
-import { raDecToAzAlt } from "@/lib/astro";
+import { raDecToAzAlt, radToDeg } from "@/lib/astro";
 
 type Location = { city: string; lat: number; lon: number };
 
@@ -35,25 +48,47 @@ const DEFAULT_LOCATION: Location = {
 
 type Speed = "pause" | "real" | "fast" | "rewind";
 
+// ---- helpers -----------------------------------------------------
+const DEG2RAD = Math.PI / 180;
+
+/** Greenwich Mean Sidereal Time in radians (Meeus). */
+function gmstRad(date: Date): number {
+  const JD = date.getTime() / 86400000 + 2440587.5;
+  const T = (JD - 2451545.0) / 36525;
+  let GMST =
+    280.46061837 +
+    360.98564736629 * (JD - 2451545.0) +
+    0.000387933 * T * T -
+    (T * T * T) / 38710000;
+  GMST = ((GMST % 360) + 360) % 360;
+  return GMST * DEG2RAD;
+}
+
 export default function CelestialSphere() {
   const containerRef = useRef<HTMLDivElement>(null);
   const [location, setLocation] = useState<Location>(DEFAULT_LOCATION);
   const [speed, setSpeed] = useState<Speed>("real");
   const [constellationsVisible, setConstellationsVisible] = useState(true);
+  const [groundFilter, setGroundFilter] = useState(true);
+
   const speedRef = useRef<Speed>("real");
   const constellationsRef = useRef(true);
+  const groundFilterRef = useRef(true);
   useEffect(() => {
     speedRef.current = speed;
   }, [speed]);
   useEffect(() => {
     constellationsRef.current = constellationsVisible;
   }, [constellationsVisible]);
+  useEffect(() => {
+    groundFilterRef.current = groundFilter;
+  }, [groundFilter]);
+
   const [modalOpen, setModalOpen] = useState(false);
   const [formCity, setFormCity] = useState("");
   const [formLat, setFormLat] = useState("");
   const [formLon, setFormLon] = useState("");
 
-  // Planet system refs (used by animation loop + ephemeris poller)
   const simDateRef = useRef<Date>(new Date());
   const planetMeshesRef = useRef<Map<string, THREE.Mesh>>(new Map());
   const fetchPositions = useServerFn(getPlanetPositions);
@@ -62,22 +97,32 @@ export default function CelestialSphere() {
   useEffect(() => {
     locationRef.current = location;
   }, [location]);
+
   type SatRuntime = {
     name: string;
+    id: string;
+    catnr: string;
     satrec: satellite.SatRec;
+    meta: SatelliteMeta;
     mesh: THREE.Mesh;
     label: CSS2DObject;
     trailGeo: THREE.BufferGeometry;
     trailPositions: Float32Array;
     trailCount: number;
     trailHead: number;
+    // Dead-reckoning cache (ECI km, km/s)
+    lastEciPos?: { x: number; y: number; z: number };
+    lastEciVel?: { x: number; y: number; z: number };
+    lastValidTime?: Date;
     lastAz?: number;
     lastAlt?: number;
+    lastRangeKm?: number;
+    lastSpeedKms?: number;
   };
   const satellitesRef = useRef<SatRuntime[]>([]);
   const satGroupRef = useRef<THREE.Group | null>(null);
 
-  // Selection / interaction state
+  // Selection — IMMUTABLE SNAPSHOT (no live refresh)
   const [selection, setSelection] = useState<CelestialSelection | null>(null);
   const [quizOpen, setQuizOpen] = useState(false);
   type SelectionTarget =
@@ -86,10 +131,7 @@ export default function CelestialSphere() {
     | { kind: "satellite"; idx: number; getWorldPos: (out: THREE.Vector3) => THREE.Vector3 };
   const selectionTargetRef = useRef<SelectionTarget | null>(null);
   const targetRingRef = useRef<THREE.Mesh | null>(null);
-  // Bridge to fire raycasts from React click handlers into scene-scope code
-  const tryPickRef = useRef<(ndcX: number, ndcY: number) => void>(() => {});
 
-  // Geolocation on mount
   useEffect(() => {
     if (!navigator.geolocation) return;
     navigator.geolocation.getCurrentPosition(
@@ -107,7 +149,6 @@ export default function CelestialSphere() {
     );
   }, []);
 
-  // Three.js scene
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -128,7 +169,6 @@ export default function CelestialSphere() {
     renderer.setSize(container.clientWidth, container.clientHeight);
     container.appendChild(renderer.domElement);
 
-    // CSS2D overlay for billboarded planet labels
     const labelRenderer = new CSS2DRenderer();
     labelRenderer.setSize(container.clientWidth, container.clientHeight);
     const labelEl = labelRenderer.domElement;
@@ -137,41 +177,37 @@ export default function CelestialSphere() {
     labelEl.style.pointerEvents = "none";
     container.appendChild(labelEl);
 
-    // Soft lighting so planet textures are visible
     scene.add(new THREE.AmbientLight(0xffffff, 0.85));
     const sun = new THREE.DirectionalLight(0xffffff, 1.1);
     sun.position.set(100, 80, 50);
     scene.add(sun);
 
-    // Stars: random points on a large sphere (inside view)
+    // Observer/equatorial groups for LST-driven rotation + lat tilt
+    const observerGroup = new THREE.Group();
+    scene.add(observerGroup);
+    const equatorialGroup = new THREE.Group();
+    observerGroup.add(equatorialGroup);
+
+    // Random background stars
     const starCount = 6000;
     const positions = new Float32Array(starCount * 3);
     const colors = new Float32Array(starCount * 3);
-    const sizes = new Float32Array(starCount);
     for (let i = 0; i < starCount; i++) {
       const u = Math.random();
       const v = Math.random();
       const theta = 2 * Math.PI * u;
       const phi = Math.acos(2 * v - 1);
       const r = 500;
-      const x = r * Math.sin(phi) * Math.cos(theta);
-      const y = r * Math.sin(phi) * Math.sin(theta);
-      const z = r * Math.cos(phi);
-      positions[i * 3] = x;
-      positions[i * 3 + 1] = y;
-      positions[i * 3 + 2] = z;
-      const t = Math.random();
-      // subtle blue/white/yellow tint
-      colors[i * 3] = 0.8 + 0.2 * t;
+      positions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+      positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+      positions[i * 3 + 2] = r * Math.cos(phi);
+      colors[i * 3] = 0.8 + 0.2 * Math.random();
       colors[i * 3 + 1] = 0.85 + 0.15 * Math.random();
       colors[i * 3 + 2] = 0.9 + 0.1 * Math.random();
-      sizes[i] = Math.random() * 1.6 + 0.4;
     }
     const starGeo = new THREE.BufferGeometry();
     starGeo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
     starGeo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-    starGeo.setAttribute("size", new THREE.BufferAttribute(sizes, 1));
-
     const starMat = new THREE.PointsMaterial({
       size: 1.4,
       vertexColors: true,
@@ -180,9 +216,9 @@ export default function CelestialSphere() {
       opacity: 0.95,
     });
     const stars = new THREE.Points(starGeo, starMat);
-    scene.add(stars);
+    equatorialGroup.add(stars);
 
-    // Named catalog stars — sized & tinted by magnitude (blue-white)
+    // Catalog stars
     const STAR_R = 490;
     const catalogKeys = Object.keys(STARS);
     const catPositions = new Float32Array(catalogKeys.length * 3);
@@ -194,9 +230,7 @@ export default function CelestialSphere() {
       catPositions[i * 3] = x;
       catPositions[i * 3 + 1] = y;
       catPositions[i * 3 + 2] = z;
-      // Brightness from magnitude: lower mag = brighter
       const brightness = Math.max(0.35, Math.min(1, (4 - s.mag) / 5));
-      // Blue-white tint
       catColors[i * 3] = 0.75 + 0.25 * brightness;
       catColors[i * 3 + 1] = 0.85 + 0.15 * brightness;
       catColors[i * 3 + 2] = 1.0;
@@ -216,9 +250,9 @@ export default function CelestialSphere() {
       blending: THREE.AdditiveBlending,
     });
     const catalogStars = new THREE.Points(catGeo, catMat);
-    scene.add(catalogStars);
+    equatorialGroup.add(catalogStars);
 
-    // Constellation lines — glowing neon-blue
+    // Constellation lines
     const linePts: number[] = [];
     for (const [a, b] of CONSTELLATIONS) {
       const sa = STARS[a];
@@ -229,10 +263,7 @@ export default function CelestialSphere() {
       linePts.push(ax, ay, az, bx, by, bz);
     }
     const lineGeo = new THREE.BufferGeometry();
-    lineGeo.setAttribute(
-      "position",
-      new THREE.BufferAttribute(new Float32Array(linePts), 3)
-    );
+    lineGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(linePts), 3));
     const lineMat = new THREE.LineBasicMaterial({
       color: 0x4fc3ff,
       transparent: true,
@@ -241,14 +272,14 @@ export default function CelestialSphere() {
       depthWrite: false,
     });
     const constellationLines = new THREE.LineSegments(lineGeo, lineMat);
-    scene.add(constellationLines);
+    equatorialGroup.add(constellationLines);
 
-    // Planets — meshes with textures, axial spin, and billboarded HTML labels
+    // Planets
     const PLANET_R = 460;
     const texLoader = new THREE.TextureLoader();
     texLoader.setCrossOrigin("anonymous");
     const planetGroup = new THREE.Group();
-    scene.add(planetGroup);
+    equatorialGroup.add(planetGroup);
     const localMeshes = new Map<string, THREE.Mesh>();
     for (const p of PLANETS) {
       const geo = new THREE.SphereGeometry(p.radius, 48, 48);
@@ -266,20 +297,15 @@ export default function CelestialSphere() {
           mat.needsUpdate = true;
         },
         undefined,
-        () => {
-          /* keep fallback color */
-        }
+        () => {}
       );
       const mesh = new THREE.Mesh(geo, mat);
-      // Initial off-screen position until first ephemeris arrives
       mesh.position.set(PLANET_R, 0, 0);
       mesh.userData = {
-        rotPerSec:
-          (Math.PI * 2) / (p.rotationPeriodHours * 3600 || 1),
+        rotPerSec: (Math.PI * 2) / (p.rotationPeriodHours * 3600 || 1),
         name: p.name,
       };
 
-      // Billboarded HTML label
       const labelDiv = document.createElement("div");
       labelDiv.textContent = p.name;
       labelDiv.className =
@@ -293,12 +319,11 @@ export default function CelestialSphere() {
     }
     planetMeshesRef.current = localMeshes;
 
-    // Satellite group (meshes + trails) — populated by TLE fetch effect
+    // Satellite group — uses observer-frame Az/Alt directly (not equatorial)
     const satGroup = new THREE.Group();
     scene.add(satGroup);
     satGroupRef.current = satGroup;
 
-    // Milky-way-ish faint band
     const bandGeo = new THREE.SphereGeometry(480, 32, 32);
     const bandMat = new THREE.MeshBasicMaterial({
       color: 0x1a2348,
@@ -308,7 +333,6 @@ export default function CelestialSphere() {
     });
     scene.add(new THREE.Mesh(bandGeo, bandMat));
 
-    // Horizon ring (faint)
     const ringGeo = new THREE.RingGeometry(450, 460, 128);
     const ringMat = new THREE.MeshBasicMaterial({
       color: 0x2a3a6a,
@@ -325,16 +349,14 @@ export default function CelestialSphere() {
     let pitch = 0;
     const pitchLimit = Math.PI / 2 - 0.05;
     let isDragging = false;
-    let downX = 0;
-    let downY = 0;
     let lastX = 0;
     let lastY = 0;
     let dragDist = 0;
 
     const onDown = (x: number, y: number) => {
       isDragging = true;
-      downX = lastX = x;
-      downY = lastY = y;
+      lastX = x;
+      lastY = y;
       dragDist = 0;
     };
     const onMove = (x: number, y: number) => {
@@ -352,7 +374,6 @@ export default function CelestialSphere() {
       isDragging = false;
     };
 
-    // Raycaster — click to select stars / planets / satellites
     const raycaster = new THREE.Raycaster();
     raycaster.params.Points = { threshold: 6 };
     const ndc = new THREE.Vector2();
@@ -372,11 +393,34 @@ export default function CelestialSphere() {
     scene.add(targetRing);
     targetRingRef.current = targetRing;
 
+    /** Build a frozen snapshot capturing live coords at click instant. */
+    const snapshot = (
+      base: Omit<CelestialSelection, "az" | "alt" | "capturedAt"> & {
+        az?: number;
+        alt?: number;
+      }
+    ): CelestialSelection => {
+      const loc = locationRef.current;
+      const date = simDateRef.current;
+      let az = base.az;
+      let alt = base.alt;
+      if ((az === undefined || alt === undefined) && base.ra !== undefined && base.dec !== undefined) {
+        const r = raDecToAzAlt(base.ra, base.dec, loc.lat, loc.lon, date);
+        az = r.az;
+        alt = r.alt;
+      }
+      return {
+        ...base,
+        az,
+        alt,
+        capturedAt: new Date().toISOString(),
+      };
+    };
+
     const tryPick = (ndcX: number, ndcY: number) => {
       ndc.set(ndcX, ndcY);
       raycaster.setFromCamera(ndc, camera);
 
-      // 1) Satellites first (closer + always interesting)
       const sats = satellitesRef.current;
       const satMeshes = sats.map((s) => s.mesh).filter((m) => m.visible);
       const satHits = raycaster.intersectObjects(satMeshes, false);
@@ -384,17 +428,28 @@ export default function CelestialSphere() {
         const hitMesh = satHits[0].object as THREE.Mesh;
         const idx = sats.findIndex((s) => s.mesh === hitMesh);
         if (idx >= 0) {
+          const s = sats[idx];
           selectionTargetRef.current = {
             kind: "satellite",
             idx,
-            getWorldPos: (out) => sats[idx].mesh.getWorldPosition(out),
+            getWorldPos: (out) => s.mesh.getWorldPosition(out),
           };
-          setSelection({ kind: "satellite", name: sats[idx].name });
+          setSelection(
+            snapshot({
+              kind: "satellite",
+              name: s.name,
+              az: s.lastAz,
+              alt: s.lastAlt,
+              distanceKm: s.lastRangeKm,
+              velocityKms: s.lastSpeedKms,
+              nasaQuery: s.name.replace(/\(.*\)/, "").trim(),
+              satMeta: s.meta,
+            })
+          );
           return;
         }
       }
 
-      // 2) Planets
       const planetMeshes = Array.from(localMeshes.values());
       const planetHits = raycaster.intersectObjects(planetMeshes, false);
       if (planetHits.length > 0) {
@@ -406,19 +461,20 @@ export default function CelestialSphere() {
             id: planet.id,
             getWorldPos: (out) => hitMesh.getWorldPosition(out),
           };
-          setSelection({
-            kind: "planet",
-            name: planet.name,
-            ra: hitMesh.userData.ra,
-            dec: hitMesh.userData.dec,
-            wikiTitle: planet.name,
-            nasaQuery: planet.name,
-          });
+          setSelection(
+            snapshot({
+              kind: "planet",
+              name: planet.name,
+              ra: hitMesh.userData.ra,
+              dec: hitMesh.userData.dec,
+              distanceKm: hitMesh.userData.rangeKm,
+              nasaQuery: planet.name,
+            })
+          );
           return;
         }
       }
 
-      // 3) Named catalog stars
       const starHits = raycaster.intersectObject(catalogStars, false);
       if (starHits.length > 0 && starHits[0].index !== undefined) {
         const i = starHits[0].index;
@@ -436,24 +492,26 @@ export default function CelestialSphere() {
               return out.applyMatrix4(catalogStars.matrixWorld);
             },
           };
-          setSelection({
-            kind: "star",
-            name: s.name,
-            ra: s.ra,
-            dec: s.dec,
-            mag: s.mag,
-          });
+          setSelection(
+            snapshot({
+              kind: "star",
+              name: s.name,
+              ra: s.ra,
+              dec: s.dec,
+              mag: s.mag,
+              nasaQuery: s.name,
+            })
+          );
           return;
         }
       }
     };
-    tryPickRef.current = tryPick;
 
     const el = renderer.domElement;
     const mouseDown = (e: MouseEvent) => onDown(e.clientX, e.clientY);
     const mouseMove = (e: MouseEvent) => onMove(e.clientX, e.clientY);
     const onClick = (e: MouseEvent) => {
-      if (dragDist > 5) return; // it was a drag, not a click
+      if (dragDist > 5) return;
       const rect = el.getBoundingClientRect();
       const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
@@ -485,19 +543,10 @@ export default function CelestialSphere() {
     el.addEventListener("touchmove", touchMove, { passive: true });
     el.addEventListener("touchend", touchEnd);
 
-    // Sky rotation simulation
-    let simTime = 0;
     let simDateMs = Date.now();
-    const speedMap: Record<Speed, number> = {
-      pause: 0,
-      real: 1,
-      fast: 10,
-      rewind: -5,
-    };
-    // Simulated seconds per wall second for ephemeris time
     const simSecondsPerWall: Record<Speed, number> = {
       pause: 0,
-      real: 60, // 1 sim minute per wall second
+      real: 1,
       fast: 600,
       rewind: -300,
     };
@@ -513,63 +562,124 @@ export default function CelestialSphere() {
 
     let raf = 0;
     const clock = new THREE.Clock();
+
     const animate = () => {
       const dt = clock.getDelta();
       const spd = speedRef.current;
-      simTime += dt * speedMap[spd] * 0.02;
       simDateMs += dt * 1000 * simSecondsPerWall[spd];
-      simDateRef.current = new Date(simDateMs);
+      const now = new Date(simDateMs);
+      simDateRef.current = now;
+      const loc = locationRef.current;
 
-      stars.rotation.y = simTime;
-      catalogStars.rotation.y = simTime;
-      constellationLines.rotation.y = simTime;
-      planetGroup.rotation.y = simTime;
+      // Sky orientation: latitude tilt + LST-driven rotation
+      const lst = gmstRad(now) + loc.lon * DEG2RAD;
+      observerGroup.rotation.x = -((Math.PI / 2) - loc.lat * DEG2RAD);
+      equatorialGroup.rotation.y = -lst;
+
       constellationLines.visible = constellationsRef.current;
 
-      // Axial planet rotation
+      // Hide stars/planets below horizon when groundFilter is on
+      // (use world Y after observer/equatorial transforms)
+      const tmpVec = new THREE.Vector3();
+      const ground = groundFilterRef.current;
+
+      // Axial planet rotation + horizon visibility
       const sign = spd === "rewind" ? -1 : spd === "pause" ? 0 : 1;
       const axisDt = dt * Math.abs(simSecondsPerWall[spd]) * sign;
       localMeshes.forEach((mesh) => {
         mesh.rotation.y += (mesh.userData.rotPerSec as number) * axisDt;
+        mesh.getWorldPosition(tmpVec);
+        mesh.visible = !ground || tmpVec.y > 0;
       });
 
-      // Satellites — propagate TLE, compute az/alt, update mesh + trail
+      // Satellites — dead-reckoning propagator
       const sats = satellitesRef.current;
       if (sats.length > 0) {
-        const now = simDateRef.current;
         const gmst = satellite.gstime(now);
-        const loc = locationRef.current;
         const observer = {
-          longitude: (loc.lon * Math.PI) / 180,
-          latitude: (loc.lat * Math.PI) / 180,
-          height: 0.1, // km
+          longitude: loc.lon * DEG2RAD,
+          latitude: loc.lat * DEG2RAD,
+          height: 0.1,
         };
         const SAT_R = 440;
         const pulse = 1 + 0.35 * Math.sin(performance.now() * 0.006);
+
         for (const sat of sats) {
-          const pv = satellite.propagate(sat.satrec, now);
-          if (!pv || typeof pv.position === "boolean" || !pv.position) {
+          // Primary: SGP4 propagate
+          let eciPos: { x: number; y: number; z: number } | null = null;
+          let eciVel: { x: number; y: number; z: number } | null = null;
+          try {
+            const pv = satellite.propagate(sat.satrec, now);
+            if (
+              pv &&
+              pv.position &&
+              typeof pv.position !== "boolean" &&
+              Number.isFinite(pv.position.x)
+            ) {
+              eciPos = pv.position as { x: number; y: number; z: number };
+              if (
+                pv.velocity &&
+                typeof pv.velocity !== "boolean" &&
+                Number.isFinite(pv.velocity.x)
+              ) {
+                eciVel = pv.velocity as { x: number; y: number; z: number };
+              }
+            }
+          } catch {
+            /* fall through */
+          }
+
+          // Dead-reckon fallback: extrapolate from last cached p+v
+          if (!eciPos && sat.lastEciPos && sat.lastEciVel && sat.lastValidTime) {
+            const dts = (now.getTime() - sat.lastValidTime.getTime()) / 1000;
+            // Cap dead-reckoning window so it doesn't drift forever
+            if (Math.abs(dts) < 60 * 30) {
+              eciPos = {
+                x: sat.lastEciPos.x + sat.lastEciVel.x * dts,
+                y: sat.lastEciPos.y + sat.lastEciVel.y * dts,
+                z: sat.lastEciPos.z + sat.lastEciVel.z * dts,
+              };
+              eciVel = sat.lastEciVel;
+            }
+          }
+
+          if (!eciPos) {
             sat.mesh.visible = false;
+            sat.label.visible = false;
             continue;
           }
-          const ecf = satellite.eciToEcf(pv.position, gmst);
+
+          // Cache when we got a fresh SGP4 result
+          if (eciVel) {
+            sat.lastEciPos = eciPos;
+            sat.lastEciVel = eciVel;
+            sat.lastValidTime = now;
+          }
+
+          const ecf = satellite.eciToEcf(eciPos, gmst);
           const look = satellite.ecfToLookAngles(observer, ecf);
           const above = look.elevation > 0;
-          sat.mesh.visible = above;
-          sat.label.visible = above;
-          if (!above) continue;
-          // Az measured from north, clockwise. Convert to scene coords (north = +z, east = +x).
+          const show = !ground || above;
+          sat.mesh.visible = show;
+          sat.label.visible = show;
+          if (!show) continue;
+
           const az = look.azimuth;
-          const el = look.elevation;
-          const x = SAT_R * Math.cos(el) * Math.sin(az);
-          const y = SAT_R * Math.sin(el);
-          const z = SAT_R * Math.cos(el) * Math.cos(az);
+          const elv = look.elevation;
+          const rangeKm = look.rangeSat;
+          const x = SAT_R * Math.cos(elv) * Math.sin(az);
+          const y = SAT_R * Math.sin(elv);
+          const z = SAT_R * Math.cos(elv) * Math.cos(az);
           sat.mesh.position.set(x, y, z);
           sat.mesh.scale.setScalar(pulse);
           sat.lastAz = az;
-          sat.lastAlt = el;
+          sat.lastAlt = elv;
+          sat.lastRangeKm = rangeKm;
+          if (eciVel) {
+            sat.lastSpeedKms = Math.hypot(eciVel.x, eciVel.y, eciVel.z);
+          }
 
-          // Append to trail (ring buffer)
+          // Trail ring buffer
           const idx = sat.trailHead * 3;
           sat.trailPositions[idx] = x;
           sat.trailPositions[idx + 1] = y;
@@ -579,11 +689,9 @@ export default function CelestialSphere() {
             sat.trailCount + 1,
             sat.trailPositions.length / 3
           );
-          // Rebuild line as ordered slice starting from oldest
           const ordered = new Float32Array(sat.trailCount * 3);
           const cap = sat.trailPositions.length / 3;
-          const start =
-            sat.trailCount < cap ? 0 : sat.trailHead;
+          const start = sat.trailCount < cap ? 0 : sat.trailHead;
           for (let i = 0; i < sat.trailCount; i++) {
             const src = ((start + i) % cap) * 3;
             ordered[i * 3] = sat.trailPositions[src];
@@ -599,7 +707,7 @@ export default function CelestialSphere() {
         }
       }
 
-      // Update target ring position to follow the current selection
+      // Target ring follows selection
       if (selectionTargetRef.current) {
         const out = new THREE.Vector3();
         selectionTargetRef.current.getWorldPos(out);
@@ -607,13 +715,14 @@ export default function CelestialSphere() {
         targetRing.lookAt(camera.position);
         const p = 1 + 0.15 * Math.sin(performance.now() * 0.005);
         targetRing.scale.setScalar(p);
-        ringMatSel.opacity = 0.55 + 0.35 * (0.5 + 0.5 * Math.sin(performance.now() * 0.005));
+        ringMatSel.opacity =
+          0.55 + 0.35 * (0.5 + 0.5 * Math.sin(performance.now() * 0.005));
         targetRing.visible = true;
       } else {
         targetRing.visible = false;
       }
 
-      // Camera orientation from yaw/pitch
+      // Camera orientation
       const dir = new THREE.Vector3(
         Math.sin(yaw) * Math.cos(pitch),
         Math.sin(pitch),
@@ -664,7 +773,7 @@ export default function CelestialSphere() {
     };
   }, []);
 
-  // Ephemeris poller — fetch planet positions from JPL Horizons periodically
+  // Ephemeris poller
   useEffect(() => {
     const PLANET_R = 460;
     const bodies = PLANETS.map((p) => ({ id: p.id, name: p.name }));
@@ -681,14 +790,15 @@ export default function CelestialSphere() {
           const meta = byName.get(pos.name);
           const mesh = planetMeshesRef.current.get(meta?.id ?? "");
           if (!mesh || !meta) continue;
-          // Horizons RA returned in degrees (ANG_FORMAT=DEG); convert to hours
           const raHours = pos.ra / 15;
           const [x, y, z] = raDecToVec3(raHours, pos.dec, PLANET_R);
           mesh.position.set(x, y, z);
           mesh.userData.ra = raHours;
           mesh.userData.dec = pos.dec;
-          // Tilt mesh so its "north pole" points toward celestial north
-          mesh.up.set(0, 1, 0);
+          if (pos.range) {
+            // Horizons returns AU for solar system bodies; convert to km
+            mesh.userData.rangeKm = pos.range * 1.496e8;
+          }
         }
       } catch (err) {
         console.warn("Horizons fetch failed", err);
@@ -703,7 +813,7 @@ export default function CelestialSphere() {
     };
   }, [fetchPositions]);
 
-  // Satellite TLE loader — fetch once + refresh hourly
+  // Satellite TLE loader
   useEffect(() => {
     let cancelled = false;
 
@@ -714,10 +824,11 @@ export default function CelestialSphere() {
         const group = satGroupRef.current;
         if (!group) return;
 
-        // Dispose previous
+        // Preserve dead-reckoning cache for satellites we already track
+        const oldByName = new Map(satellitesRef.current.map((s) => [s.name, s]));
+
         satellitesRef.current.forEach((s) => {
           group.remove(s.mesh);
-          group.remove(s.mesh); // safety
           s.mesh.geometry.dispose();
           (s.mesh.material as THREE.Material).dispose();
           s.trailGeo.dispose();
@@ -738,7 +849,6 @@ export default function CelestialSphere() {
           }
           const color = colors[s.id] ?? 0x6affc9;
 
-          // Glowing pulsing satellite mesh
           const geo = new THREE.SphereGeometry(2.2, 16, 16);
           const mat = new THREE.MeshBasicMaterial({
             color,
@@ -750,7 +860,6 @@ export default function CelestialSphere() {
           const mesh = new THREE.Mesh(geo, mat);
           mesh.visible = false;
 
-          // Label
           const labelDiv = document.createElement("div");
           labelDiv.textContent = s.name;
           labelDiv.className =
@@ -762,14 +871,10 @@ export default function CelestialSphere() {
 
           group.add(mesh);
 
-          // Trail line — neon glowing
           const MAX_TRAIL = 240;
           const trailPositions = new Float32Array(MAX_TRAIL * 3);
           const trailGeo = new THREE.BufferGeometry();
-          trailGeo.setAttribute(
-            "position",
-            new THREE.BufferAttribute(trailPositions, 3)
-          );
+          trailGeo.setAttribute("position", new THREE.BufferAttribute(trailPositions, 3));
           trailGeo.setDrawRange(0, 0);
           const trailMat = new THREE.LineBasicMaterial({
             color,
@@ -781,15 +886,27 @@ export default function CelestialSphere() {
           const trail = new THREE.Line(trailGeo, trailMat);
           group.add(trail);
 
+          // Derive Space-Track metadata from TLE
+          const meta = buildSatMeta(s.id, s.line1, s.line2);
+
+          const prev = oldByName.get(s.name);
+
           satellitesRef.current.push({
             name: s.name,
+            id: s.id,
+            catnr: meta.catnr ?? "",
             satrec,
+            meta,
             mesh,
             label,
             trailGeo,
             trailPositions,
             trailCount: 0,
             trailHead: 0,
+            // Inherit dead-reckon cache across refreshes
+            lastEciPos: prev?.lastEciPos,
+            lastEciVel: prev?.lastEciVel,
+            lastValidTime: prev?.lastValidTime,
           });
         }
       } catch (err) {
@@ -798,45 +915,12 @@ export default function CelestialSphere() {
     };
 
     load();
-    const id = window.setInterval(load, 60 * 60 * 1000); // hourly refresh
+    const id = window.setInterval(load, 60 * 60 * 1000);
     return () => {
       cancelled = true;
       window.clearInterval(id);
     };
   }, [fetchSatTLEs]);
-
-  // Refresh selection coords (az/alt) while panel is open
-  useEffect(() => {
-    if (!selection) return;
-    const tick = () => {
-      const loc = locationRef.current;
-      const date = simDateRef.current;
-      if (selection.kind === "satellite") {
-        const tgt = selectionTargetRef.current;
-        if (tgt?.kind === "satellite") {
-          const s = satellitesRef.current[tgt.idx];
-          if (s && s.lastAz !== undefined && s.lastAlt !== undefined) {
-            setSelection((prev) =>
-              prev ? { ...prev, az: s.lastAz, alt: s.lastAlt } : prev
-            );
-          }
-        }
-      } else if (selection.ra !== undefined && selection.dec !== undefined) {
-        const { az, alt } = raDecToAzAlt(
-          selection.ra,
-          selection.dec,
-          loc.lat,
-          loc.lon,
-          date
-        );
-        setSelection((prev) => (prev ? { ...prev, az, alt } : prev));
-      }
-    };
-    tick();
-    const id = window.setInterval(tick, 1500);
-    return () => window.clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selection?.name, selection?.kind]);
 
   const submitLocation = () => {
     const lat = parseFloat(formLat);
@@ -918,12 +1002,23 @@ export default function CelestialSphere() {
             label="Constellations"
           />
           <HudButton
+            active={groundFilter}
+            onClick={() => setGroundFilter((v) => !v)}
+            icon={<Mountain className="h-4 w-4" />}
+            label="Ground"
+          />
+          <HudButton
             active={false}
             onClick={() => setQuizOpen(true)}
             icon={<GraduationCap className="h-4 w-4" />}
             label="Quiz"
           />
         </div>
+      </div>
+
+      {/* Developer credit watermark */}
+      <div className="pointer-events-none absolute bottom-2 left-3 z-10 select-none font-mono text-[10px] tracking-tight text-gray-500/80">
+        Project by: Achut Mahadev Kadam &middot; krishna0124@gmail.com
       </div>
 
       <CelestialInfoPanel
@@ -990,6 +1085,32 @@ export default function CelestialSphere() {
   );
 }
 
+/** Parse useful fields out of a TLE pair for the Space-Track tab. */
+function buildSatMeta(id: string, line1: string, line2: string): SatelliteMeta {
+  const meta: SatelliteMeta = {};
+  try {
+    meta.catnr = line1.substring(2, 7).trim();
+    meta.intlDesignator = line1.substring(9, 17).trim();
+    const epYear = parseInt(line1.substring(18, 20), 10);
+    const epDay = parseFloat(line1.substring(20, 32));
+    if (Number.isFinite(epYear) && Number.isFinite(epDay)) {
+      const year = epYear < 57 ? 2000 + epYear : 1900 + epYear;
+      const d = new Date(Date.UTC(year, 0, 1));
+      d.setUTCMilliseconds(d.getUTCMilliseconds() + (epDay - 1) * 86400000);
+      meta.epoch = d.toISOString().replace("T", " ").slice(0, 19) + " UTC";
+    }
+    meta.inclinationDeg = parseFloat(line2.substring(8, 16));
+    meta.eccentricity = parseFloat("0." + line2.substring(26, 33).trim());
+    meta.meanMotion = parseFloat(line2.substring(52, 63));
+    if (meta.meanMotion) meta.periodMinutes = 1440 / meta.meanMotion;
+  } catch {
+    /* ignore */
+  }
+  // Suppress unused warning for id while keeping the call signature explicit
+  void id;
+  return meta;
+}
+
 function HudButton({
   active,
   onClick,
@@ -1004,14 +1125,17 @@ function HudButton({
   return (
     <button
       onClick={onClick}
-      className={`flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-medium transition-all ${
+      className={`group flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium transition-all ${
         active
-          ? "bg-sky-500/90 text-white shadow-lg shadow-sky-500/30"
-          : "text-white/70 hover:bg-white/10 hover:text-white"
+          ? "bg-sky-500/30 text-sky-50 shadow-[inset_0_0_0_1px_rgba(125,211,252,0.45)]"
+          : "text-white/80 hover:bg-white/10 hover:text-white"
       }`}
     >
       {icon}
-      <span>{label}</span>
+      <span className="hidden sm:inline">{label}</span>
     </button>
   );
 }
+
+// Suppress unused import warnings if any util is conditionally used
+void radToDeg;
