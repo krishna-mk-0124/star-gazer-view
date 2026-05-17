@@ -1,20 +1,23 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { QUIZ } from "@/lib/quizQuestions";
+import { generateQuiz, type QuizQuestion } from "@/lib/quizGenerator";
 import { Trophy, RotateCcw, GraduationCap } from "lucide-react";
 
 export function QuizModal({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
+  const [seed, setSeed] = useState(0);
+  const quiz: QuizQuestion[] = useMemo(() => generateQuiz(30), [seed]);
   const [index, setIndex] = useState(0);
   const [score, setScore] = useState(0);
   const [picked, setPicked] = useState<number | null>(null);
   const [finished, setFinished] = useState(false);
 
-  const total = QUIZ.length;
-  const question = QUIZ[index];
+  const total = quiz.length;
+  const question = quiz[index];
 
   const reset = () => {
+    setSeed((s) => s + 1);
     setIndex(0);
     setScore(0);
     setPicked(null);
@@ -55,7 +58,8 @@ export function QuizModal({ open, onOpenChange }: { open: boolean; onOpenChange:
           <div className="space-y-5">
             <div className="flex items-center justify-between text-xs text-white/60">
               <span>
-                Question {index + 1} / {total}
+                Question {index + 1} / {total} ·{" "}
+                <span className="text-sky-300">{question.category}</span>
               </span>
               <span>Score: {score}</span>
             </div>
@@ -110,7 +114,7 @@ export function QuizModal({ open, onOpenChange }: { open: boolean; onOpenChange:
             </div>
             <div className="flex justify-center gap-2">
               <Button onClick={reset} className="gap-2 bg-sky-500/90 hover:bg-sky-500">
-                <RotateCcw className="h-4 w-4" /> Play again
+                <RotateCcw className="h-4 w-4" /> New random set
               </Button>
               <Button
                 variant="secondary"
