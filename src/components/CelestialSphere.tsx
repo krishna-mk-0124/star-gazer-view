@@ -37,6 +37,13 @@ import {
 } from "@/components/CelestialInfoPanel";
 import { QuizModal } from "@/components/QuizModal";
 import { raDecToAzAlt } from "@/lib/astro";
+import { planetRaDec } from "@/lib/ephemeris";
+
+/** Radians → degrees (global helper, mirrors THREE.MathUtils.radToDeg). */
+const radToDeg = (rad: number): number => rad * (180 / Math.PI);
+
+/** Visual radius of the planet shell on the celestial sphere. */
+const PLANET_R = 460;
 
 type Location = { city: string; lat: number; lon: number };
 
@@ -300,10 +307,16 @@ export default function CelestialSphere() {
         () => {}
       );
       const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.set(PLANET_R, 0, 0);
+      // Seed each body at its true RA/Dec computed from Julian Date so they
+      // never share the (PLANET_R, 0, 0) origin — eliminates visual stacking.
+      const seed = planetRaDec(p.name, simDateRef.current);
+      const [sx, sy, sz] = raDecToVec3(seed.raHours, seed.decDeg, PLANET_R);
+      mesh.position.set(sx, sy, sz);
       mesh.userData = {
         rotPerSec: (Math.PI * 2) / (p.rotationPeriodHours * 3600 || 1),
         name: p.name,
+        ra: seed.raHours,
+        dec: seed.decDeg,
       };
 
       const labelDiv = document.createElement("div");
@@ -587,6 +600,15 @@ export default function CelestialSphere() {
       const sign = spd === "rewind" ? -1 : spd === "pause" ? 0 : 1;
       const axisDt = dt * Math.abs(simSecondsPerWall[spd]) * sign;
       localMeshes.forEach((mesh) => {
+        // Re-derive true geocentric RA/Dec for this body from the active
+        // simulation Julian Date — decoupled from Horizons fetch so each
+        // planet always has its own unique sky coordinate.
+        const name = mesh.userData.name as string;
+        const { raHours, decDeg } = planetRaDec(name, now);
+        const [px, py, pz] = raDecToVec3(raHours, decDeg, PLANET_R);
+        mesh.position.set(px, py, pz);
+        mesh.userData.ra = raHours;
+        mesh.userData.dec = decDeg;
         mesh.rotation.y += (mesh.userData.rotPerSec as number) * axisDt;
         mesh.getWorldPosition(tmpVec);
         mesh.visible = !ground || tmpVec.y > 0;
