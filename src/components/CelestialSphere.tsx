@@ -37,6 +37,13 @@ import {
 } from "@/components/CelestialInfoPanel";
 import { QuizModal } from "@/components/QuizModal";
 import { raDecToAzAlt } from "@/lib/astro";
+import { planetRaDec } from "@/lib/ephemeris";
+
+/** Radians → degrees (global helper, mirrors THREE.MathUtils.radToDeg). */
+const radToDeg = (rad: number): number => rad * (180 / Math.PI);
+
+/** Visual radius of the planet shell on the celestial sphere. */
+const PLANET_R = 460;
 
 type Location = { city: string; lat: number; lon: number };
 
