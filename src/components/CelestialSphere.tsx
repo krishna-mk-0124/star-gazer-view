@@ -307,10 +307,16 @@ export default function CelestialSphere() {
         () => {}
       );
       const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.set(PLANET_R, 0, 0);
+      // Seed each body at its true RA/Dec computed from Julian Date so they
+      // never share the (PLANET_R, 0, 0) origin — eliminates visual stacking.
+      const seed = planetRaDec(p.name, simDateRef.current);
+      const [sx, sy, sz] = raDecToVec3(seed.raHours, seed.decDeg, PLANET_R);
+      mesh.position.set(sx, sy, sz);
       mesh.userData = {
         rotPerSec: (Math.PI * 2) / (p.rotationPeriodHours * 3600 || 1),
         name: p.name,
+        ra: seed.raHours,
+        dec: seed.decDeg,
       };
 
       const labelDiv = document.createElement("div");
