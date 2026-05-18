@@ -656,16 +656,18 @@ export default function CelestialSphere() {
       // (use world Y after observer/equatorial transforms)
       const tmpVec = new THREE.Vector3();
       const ground = groundFilterRef.current;
+      groundGroup.visible = ground;
 
       // Axial planet rotation + horizon visibility
       const sign = spd === "rewind" ? -1 : spd === "pause" ? 0 : 1;
       const axisDt = dt * Math.abs(simSecondsPerWall[spd]) * sign;
+      const activeAnchor = anchorRef.current;
       localMeshes.forEach((mesh) => {
-        // Re-derive true geocentric RA/Dec for this body from the active
-        // simulation Julian Date — decoupled from Horizons fetch so each
-        // planet always has its own unique sky coordinate.
         const name = mesh.userData.name as string;
-        const { raHours, decDeg } = planetRaDec(name, now);
+        if (name === activeAnchor) { mesh.visible = false; return; }
+        // Re-derive RA/Dec for this body relative to the active anchor so
+        // perspective shifts (Earth → Mars) recompute the entire sky map.
+        const { raHours, decDeg } = planetRaDec(name, now, activeAnchor);
         const [px, py, pz] = raDecToVec3(raHours, decDeg, PLANET_R);
         mesh.position.set(px, py, pz);
         mesh.userData.ra = raHours;
