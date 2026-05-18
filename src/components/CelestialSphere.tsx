@@ -24,6 +24,7 @@ import {
   Sparkles,
   GraduationCap,
   Mountain,
+  Globe,
 } from "lucide-react";
 import { STARS, CONSTELLATIONS, raDecToVec3 } from "@/lib/starCatalog";
 import { PLANETS } from "@/lib/planets";
@@ -38,6 +39,7 @@ import {
 import { QuizModal } from "@/components/QuizModal";
 import { raDecToAzAlt } from "@/lib/astro";
 import { planetRaDec } from "@/lib/ephemeris";
+import { CITIES } from "@/lib/cities";
 
 /** Radians → degrees (global helper, mirrors THREE.MathUtils.radToDeg). */
 const radToDeg = (rad: number): number => rad * (180 / Math.PI);
@@ -77,10 +79,12 @@ export default function CelestialSphere() {
   const [speed, setSpeed] = useState<Speed>("real");
   const [constellationsVisible, setConstellationsVisible] = useState(true);
   const [groundFilter, setGroundFilter] = useState(true);
+  const [anchor, setAnchor] = useState<string>("Earth");
 
   const speedRef = useRef<Speed>("real");
   const constellationsRef = useRef(true);
   const groundFilterRef = useRef(true);
+  const anchorRef = useRef("Earth");
   useEffect(() => {
     speedRef.current = speed;
   }, [speed]);
@@ -90,6 +94,9 @@ export default function CelestialSphere() {
   useEffect(() => {
     groundFilterRef.current = groundFilter;
   }, [groundFilter]);
+  useEffect(() => {
+    anchorRef.current = anchor;
+  }, [anchor]);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [formCity, setFormCity] = useState("");
@@ -194,6 +201,62 @@ export default function CelestialSphere() {
     scene.add(observerGroup);
     const equatorialGroup = new THREE.Group();
     observerGroup.add(equatorialGroup);
+
+    // Horizon ground disk + compass rose (lives in world frame so it stays
+    // glued to the observer's true horizon regardless of sky rotation).
+    const HORIZON_R = 470;
+    const groundGroup = new THREE.Group();
+    scene.add(groundGroup);
+    const groundGeo = new THREE.CircleGeometry(HORIZON_R, 96);
+    const groundMat = new THREE.MeshBasicMaterial({
+      color: 0x05070d,
+      transparent: true,
+      opacity: 0.92,
+      side: THREE.DoubleSide,
+      depthWrite: true,
+    });
+    const groundDisk = new THREE.Mesh(groundGeo, groundMat);
+    groundDisk.rotation.x = -Math.PI / 2;
+    groundDisk.position.y = -0.5;
+    groundGroup.add(groundDisk);
+    // Subtle horizon rim ring
+    const rimPts: THREE.Vector3[] = [];
+    for (let i = 0; i <= 128; i++) {
+      const t = (i / 128) * Math.PI * 2;
+      rimPts.push(new THREE.Vector3(Math.cos(t) * HORIZON_R, 0, Math.sin(t) * HORIZON_R));
+    }
+    const rimGeo = new THREE.BufferGeometry().setFromPoints(rimPts);
+    const rimMat = new THREE.LineBasicMaterial({
+      color: 0x4fc3ff,
+      transparent: true,
+      opacity: 0.45,
+    });
+    groundGroup.add(new THREE.Line(rimGeo, rimMat));
+    // Compass cardinal labels (N at +Z, E at -X to match astronomy convention)
+    const COMPASS: { label: string; az: number }[] = [
+      { label: "N", az: 0 },
+      { label: "NE", az: 45 },
+      { label: "E", az: 90 },
+      { label: "SE", az: 135 },
+      { label: "S", az: 180 },
+      { label: "SW", az: 225 },
+      { label: "W", az: 270 },
+      { label: "NW", az: 315 },
+    ];
+    for (const c of COMPASS) {
+      const div = document.createElement("div");
+      div.textContent = c.label;
+      const big = c.label.length === 1;
+      div.className = `select-none font-mono font-bold tracking-widest ${
+        big ? "text-base text-sky-200" : "text-[10px] text-sky-300/70"
+      }`;
+      div.style.textShadow = "0 0 8px rgba(79,195,255,0.65)";
+      const obj = new CSS2DObject(div);
+      const a = c.az * DEG2RAD;
+      // Az measured from N (=+Z) toward E (=-X)
+      obj.position.set(-Math.sin(a) * HORIZON_R, 2, Math.cos(a) * HORIZON_R);
+      groundGroup.add(obj);
+    }
 
     // Random background stars
     const starCount = 6000;
@@ -595,16 +658,18 @@ export default function CelestialSphere() {
       // (use world Y after observer/equatorial transforms)
       const tmpVec = new THREE.Vector3();
       const ground = groundFilterRef.current;
+      groundGroup.visible = ground;
 
       // Axial planet rotation + horizon visibility
       const sign = spd === "rewind" ? -1 : spd === "pause" ? 0 : 1;
       const axisDt = dt * Math.abs(simSecondsPerWall[spd]) * sign;
+      const activeAnchor = anchorRef.current;
       localMeshes.forEach((mesh) => {
-        // Re-derive true geocentric RA/Dec for this body from the active
-        // simulation Julian Date — decoupled from Horizons fetch so each
-        // planet always has its own unique sky coordinate.
         const name = mesh.userData.name as string;
-        const { raHours, decDeg } = planetRaDec(name, now);
+        if (name === activeAnchor) { mesh.visible = false; return; }
+        // Re-derive RA/Dec for this body relative to the active anchor so
+        // perspective shifts (Earth → Mars) recompute the entire sky map.
+        const { raHours, decDeg } = planetRaDec(name, now, activeAnchor);
         const [px, py, pz] = raDecToVec3(raHours, decDeg, PLANET_R);
         mesh.position.set(px, py, pz);
         mesh.userData.ra = raHours;
@@ -962,7 +1027,7 @@ export default function CelestialSphere() {
       <div ref={containerRef} className="absolute inset-0" />
 
       {/* Top header */}
-      <header className="pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-center p-4">
+      <header className="pointer-events-none absolute inset-x-0 top-0 z-10 flex flex-wrap justify-center gap-3 p-4">
         <div className="pointer-events-auto flex items-center gap-3 rounded-2xl border border-white/10 bg-black/40 px-4 py-2 backdrop-blur-xl">
           <MapPin className="h-4 w-4 text-sky-400" />
           <div className="leading-tight">
@@ -986,6 +1051,22 @@ export default function CelestialSphere() {
           >
             Change
           </Button>
+        </div>
+        <div className="pointer-events-auto flex items-center gap-2 rounded-2xl border border-white/10 bg-black/40 px-3 py-2 backdrop-blur-xl">
+          <Globe className="h-4 w-4 text-violet-300" />
+          <span className="text-[11px] uppercase tracking-[0.2em] text-white/60">
+            Anchor
+          </span>
+          <select
+            value={anchor}
+            onChange={(e) => setAnchor(e.target.value)}
+            className="rounded-md border border-white/20 bg-white/10 px-2 py-1 text-xs text-white outline-none focus:border-sky-400"
+          >
+            <option value="Earth">Earth</option>
+            <option value="Moon">Moon</option>
+            <option value="Mars">Mars</option>
+            <option value="Jupiter">Jupiter</option>
+          </select>
         </div>
       </header>
 
@@ -1040,7 +1121,7 @@ export default function CelestialSphere() {
 
       {/* Developer credit watermark */}
       <div className="pointer-events-none absolute bottom-2 left-3 z-10 select-none font-mono text-[10px] tracking-tight text-gray-500/80">
-        Project by: Achut Mahadev Kadam &middot; krishna0124@gmail.com
+        Project Director: Achut Mahadev Kadam | Tech Support: krishna0124@gmail.com
       </div>
 
       <CelestialInfoPanel
@@ -1062,11 +1143,25 @@ export default function CelestialSphere() {
               <Label htmlFor="city">City</Label>
               <Input
                 id="city"
+                list="city-options"
                 value={formCity}
-                onChange={(e) => setFormCity(e.target.value)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setFormCity(v);
+                  const match = CITIES.find((c) => c.name === v);
+                  if (match) {
+                    setFormLat(String(match.lat));
+                    setFormLon(String(match.lon));
+                  }
+                }}
                 placeholder="e.g. Tokyo, Japan"
                 className="bg-white/10 border-white/20"
               />
+              <datalist id="city-options">
+                {CITIES.map((c) => (
+                  <option key={c.name} value={c.name} />
+                ))}
+              </datalist>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">

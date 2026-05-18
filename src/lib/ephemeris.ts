@@ -105,21 +105,28 @@ function moonRaDec(JD: number) {
   return eclToRaDec(x, y, z);
 }
 
-export function planetRaDec(name: string, date: Date): { raHours: number; decDeg: number } {
+/**
+ * RA/Dec of `name` as observed from `origin` (default "Earth"). When the
+ * observer is on the Moon we treat the origin as Earth (geocentric proxy).
+ */
+export function planetRaDec(
+  name: string,
+  date: Date,
+  origin: string = "Earth"
+): { raHours: number; decDeg: number } {
   const JD = julianDate(date);
   const T = (JD - 2451545.0) / 36525;
-  if (name === "Sun") {
-    const e = heliocentric("Earth", T);
-    return eclToRaDec(-e.x, -e.y, -e.z);
-  }
-  if (name === "Moon") return moonRaDec(JD);
+  const originKey = origin === "Moon" ? "Earth" : origin;
+  const o = ELEMS[originKey] ? heliocentric(originKey, T) : heliocentric("Earth", T);
+  if (name === "Sun") return eclToRaDec(-o.x, -o.y, -o.z);
+  if (name === "Moon" && originKey === "Earth") return moonRaDec(JD);
   if (!ELEMS[name]) {
-    // Unknown body — spread by hash so it never overlaps another
     let h = 0;
     for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
+    // Combine with origin to spread per-perspective so nothing stacks
+    for (let i = 0; i < origin.length; i++) h = (h * 17 + origin.charCodeAt(i)) | 0;
     return { raHours: ((h >>> 0) % 24000) / 1000, decDeg: ((h % 18000) / 100) - 90 };
   }
   const p = heliocentric(name, T);
-  const e = heliocentric("Earth", T);
-  return eclToRaDec(p.x - e.x, p.y - e.y, p.z - e.z);
+  return eclToRaDec(p.x - o.x, p.y - o.y, p.z - o.z);
 }
