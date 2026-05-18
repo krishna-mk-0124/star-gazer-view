@@ -600,6 +600,15 @@ export default function CelestialSphere() {
       const sign = spd === "rewind" ? -1 : spd === "pause" ? 0 : 1;
       const axisDt = dt * Math.abs(simSecondsPerWall[spd]) * sign;
       localMeshes.forEach((mesh) => {
+        // Re-derive true geocentric RA/Dec for this body from the active
+        // simulation Julian Date — decoupled from Horizons fetch so each
+        // planet always has its own unique sky coordinate.
+        const name = mesh.userData.name as string;
+        const { raHours, decDeg } = planetRaDec(name, now);
+        const [px, py, pz] = raDecToVec3(raHours, decDeg, PLANET_R);
+        mesh.position.set(px, py, pz);
+        mesh.userData.ra = raHours;
+        mesh.userData.dec = decDeg;
         mesh.rotation.y += (mesh.userData.rotPerSec as number) * axisDt;
         mesh.getWorldPosition(tmpVec);
         mesh.visible = !ground || tmpVec.y > 0;
