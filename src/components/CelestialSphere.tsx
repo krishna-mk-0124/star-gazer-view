@@ -1121,7 +1121,7 @@ export default function CelestialSphere() {
 
       {/* Developer credit watermark */}
       <div className="pointer-events-none absolute bottom-2 left-3 z-10 select-none font-mono text-[10px] tracking-tight text-gray-500/80">
-        Project by: Achut Mahadev Kadam &middot; krishna0124@gmail.com
+        Project Director: Achut Mahadev Kadam | Tech Support: krishna0124@gmail.com
       </div>
 
       <CelestialInfoPanel
