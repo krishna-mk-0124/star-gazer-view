@@ -77,10 +77,12 @@ export default function CelestialSphere() {
   const [speed, setSpeed] = useState<Speed>("real");
   const [constellationsVisible, setConstellationsVisible] = useState(true);
   const [groundFilter, setGroundFilter] = useState(true);
+  const [anchor, setAnchor] = useState<string>("Earth");
 
   const speedRef = useRef<Speed>("real");
   const constellationsRef = useRef(true);
   const groundFilterRef = useRef(true);
+  const anchorRef = useRef("Earth");
   useEffect(() => {
     speedRef.current = speed;
   }, [speed]);
@@ -90,6 +92,9 @@ export default function CelestialSphere() {
   useEffect(() => {
     groundFilterRef.current = groundFilter;
   }, [groundFilter]);
+  useEffect(() => {
+    anchorRef.current = anchor;
+  }, [anchor]);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [formCity, setFormCity] = useState("");
