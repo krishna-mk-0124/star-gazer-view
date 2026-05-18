@@ -1027,7 +1027,7 @@ export default function CelestialSphere() {
       <div ref={containerRef} className="absolute inset-0" />
 
       {/* Top header */}
-      <header className="pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-center p-4">
+      <header className="pointer-events-none absolute inset-x-0 top-0 z-10 flex flex-wrap justify-center gap-3 p-4">
         <div className="pointer-events-auto flex items-center gap-3 rounded-2xl border border-white/10 bg-black/40 px-4 py-2 backdrop-blur-xl">
           <MapPin className="h-4 w-4 text-sky-400" />
           <div className="leading-tight">
@@ -1051,6 +1051,22 @@ export default function CelestialSphere() {
           >
             Change
           </Button>
+        </div>
+        <div className="pointer-events-auto flex items-center gap-2 rounded-2xl border border-white/10 bg-black/40 px-3 py-2 backdrop-blur-xl">
+          <Globe className="h-4 w-4 text-violet-300" />
+          <span className="text-[11px] uppercase tracking-[0.2em] text-white/60">
+            Anchor
+          </span>
+          <select
+            value={anchor}
+            onChange={(e) => setAnchor(e.target.value)}
+            className="rounded-md border border-white/20 bg-white/10 px-2 py-1 text-xs text-white outline-none focus:border-sky-400"
+          >
+            <option value="Earth">Earth</option>
+            <option value="Moon">Moon</option>
+            <option value="Mars">Mars</option>
+            <option value="Jupiter">Jupiter</option>
+          </select>
         </div>
       </header>
 
