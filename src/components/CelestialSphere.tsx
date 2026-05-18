@@ -24,6 +24,7 @@ import {
   Sparkles,
   GraduationCap,
   Mountain,
+  Globe,
 } from "lucide-react";
 import { STARS, CONSTELLATIONS, raDecToVec3 } from "@/lib/starCatalog";
 import { PLANETS } from "@/lib/planets";
@@ -38,6 +39,7 @@ import {
 import { QuizModal } from "@/components/QuizModal";
 import { raDecToAzAlt } from "@/lib/astro";
 import { planetRaDec } from "@/lib/ephemeris";
+import { CITIES } from "@/lib/cities";
 
 /** Radians → degrees (global helper, mirrors THREE.MathUtils.radToDeg). */
 const radToDeg = (rad: number): number => rad * (180 / Math.PI);
