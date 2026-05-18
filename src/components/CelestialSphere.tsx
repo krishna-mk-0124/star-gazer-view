@@ -1143,11 +1143,25 @@ export default function CelestialSphere() {
               <Label htmlFor="city">City</Label>
               <Input
                 id="city"
+                list="city-options"
                 value={formCity}
-                onChange={(e) => setFormCity(e.target.value)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setFormCity(v);
+                  const match = CITIES.find((c) => c.name === v);
+                  if (match) {
+                    setFormLat(String(match.lat));
+                    setFormLon(String(match.lon));
+                  }
+                }}
                 placeholder="e.g. Tokyo, Japan"
                 className="bg-white/10 border-white/20"
               />
+              <datalist id="city-options">
+                {CITIES.map((c) => (
+                  <option key={c.name} value={c.name} />
+                ))}
+              </datalist>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
