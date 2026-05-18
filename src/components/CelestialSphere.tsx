@@ -200,6 +200,62 @@ export default function CelestialSphere() {
     const equatorialGroup = new THREE.Group();
     observerGroup.add(equatorialGroup);
 
+    // Horizon ground disk + compass rose (lives in world frame so it stays
+    // glued to the observer's true horizon regardless of sky rotation).
+    const HORIZON_R = 470;
+    const groundGroup = new THREE.Group();
+    scene.add(groundGroup);
+    const groundGeo = new THREE.CircleGeometry(HORIZON_R, 96);
+    const groundMat = new THREE.MeshBasicMaterial({
+      color: 0x05070d,
+      transparent: true,
+      opacity: 0.92,
+      side: THREE.DoubleSide,
+      depthWrite: true,
+    });
+    const groundDisk = new THREE.Mesh(groundGeo, groundMat);
+    groundDisk.rotation.x = -Math.PI / 2;
+    groundDisk.position.y = -0.5;
+    groundGroup.add(groundDisk);
+    // Subtle horizon rim ring
+    const rimPts: THREE.Vector3[] = [];
+    for (let i = 0; i <= 128; i++) {
+      const t = (i / 128) * Math.PI * 2;
+      rimPts.push(new THREE.Vector3(Math.cos(t) * HORIZON_R, 0, Math.sin(t) * HORIZON_R));
+    }
+    const rimGeo = new THREE.BufferGeometry().setFromPoints(rimPts);
+    const rimMat = new THREE.LineBasicMaterial({
+      color: 0x4fc3ff,
+      transparent: true,
+      opacity: 0.45,
+    });
+    groundGroup.add(new THREE.Line(rimGeo, rimMat));
+    // Compass cardinal labels (N at +Z, E at -X to match astronomy convention)
+    const COMPASS: { label: string; az: number }[] = [
+      { label: "N", az: 0 },
+      { label: "NE", az: 45 },
+      { label: "E", az: 90 },
+      { label: "SE", az: 135 },
+      { label: "S", az: 180 },
+      { label: "SW", az: 225 },
+      { label: "W", az: 270 },
+      { label: "NW", az: 315 },
+    ];
+    for (const c of COMPASS) {
+      const div = document.createElement("div");
+      div.textContent = c.label;
+      const big = c.label.length === 1;
+      div.className = `select-none font-mono font-bold tracking-widest ${
+        big ? "text-base text-sky-200" : "text-[10px] text-sky-300/70"
+      }`;
+      div.style.textShadow = "0 0 8px rgba(79,195,255,0.65)";
+      const obj = new CSS2DObject(div);
+      const a = c.az * DEG2RAD;
+      // Az measured from N (=+Z) toward E (=-X)
+      obj.position.set(-Math.sin(a) * HORIZON_R, 2, Math.cos(a) * HORIZON_R);
+      groundGroup.add(obj);
+    }
+
     // Random background stars
     const starCount = 6000;
     const positions = new Float32Array(starCount * 3);
